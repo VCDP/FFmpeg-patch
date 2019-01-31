@@ -1,0 +1,1696 @@
+From 0001269c140c41cbfcb1edcdd91022cb75f03315 Mon Sep 17 00:00:00 2001
+From: Lin Xie <lin.xie@intel.com>
+Date: Wed, 9 Jan 2019 15:19:31 +0800
+Subject: [PATCH 1/2] Intel inference engine detection filter
+
+Enable dnn backend support Intel inference engine
+Add inference filter base
+Handle inference detection result and write to metadata
+
+Signed-off-by: Lin Xie <lin.xie@intel.com>
+---
+ configure                          |   7 +-
+ libavfilter/Makefile               |   2 +
+ libavfilter/allfilters.c           |   1 +
+ libavfilter/dnn_backend_intel_ie.c | 440 +++++++++++++++++++++++++++++++++++++
+ libavfilter/dnn_backend_intel_ie.h |  40 ++++
+ libavfilter/dnn_data.h             | 165 ++++++++++++++
+ libavfilter/dnn_interface.c        |  11 +
+ libavfilter/dnn_interface.h        |  23 +-
+ libavfilter/inference.c            | 268 ++++++++++++++++++++++
+ libavfilter/inference.h            | 108 +++++++++
+ libavfilter/vf_inference_detect.c  | 429 ++++++++++++++++++++++++++++++++++++
+ libavutil/frame.c                  |   1 +
+ libavutil/frame.h                  |   2 +
+ 13 files changed, 1495 insertions(+), 2 deletions(-)
+ create mode 100644 libavfilter/dnn_backend_intel_ie.c
+ create mode 100644 libavfilter/dnn_backend_intel_ie.h
+ create mode 100644 libavfilter/dnn_data.h
+ create mode 100644 libavfilter/inference.c
+ create mode 100644 libavfilter/inference.h
+ create mode 100644 libavfilter/vf_inference_detect.c
+
+diff --git a/configure b/configure
+index a70c5f9..68b7dfb 100755
+--- a/configure
++++ b/configure
+@@ -238,6 +238,8 @@ External library support:
+   --enable-libgsm          enable GSM de/encoding via libgsm [no]
+   --enable-libiec61883     enable iec61883 via libiec61883 [no]
+   --enable-libilbc         enable iLBC de/encoding via libilbc [no]
++  --enable-libinference_engine enable intel inference engine as a DNN module
++                               backend [no]
+   --enable-libjack         enable JACK audio sound server [no]
+   --enable-libklvanc       enable Kernel Labs VANC processing [no]
+   --enable-libkvazaar      enable HEVC encoding via libkvazaar [no]
+@@ -1722,6 +1724,7 @@ EXTERNAL_LIBRARY_LIST="
+     libgsm
+     libiec61883
+     libilbc
++    libinference_engine
+     libjack
+     libklvanc
+     libkvazaar
+@@ -2544,7 +2547,7 @@ cbs_mpeg2_select="cbs"
+ cbs_vp9_select="cbs"
+ dct_select="rdft"
+ dirac_parse_select="golomb"
+-dnn_suggest="libtensorflow"
++dnn_suggest="libtensorflow libinference_engine"
+ error_resilience_select="me_cmp"
+ faandct_deps="faan"
+ faandct_select="fdctdsp"
+@@ -6240,6 +6243,8 @@ enabled rkmpp             && { require_pkg_config rkmpp rockchip_mpp  rockchip/r
+                              }
+ enabled vapoursynth       && require_pkg_config vapoursynth "vapoursynth-script >= 42" VSScript.h vsscript_init
+ 
++enabled libinference_engine &&
++    require_pkg_config libinference_engine dldt "ie_api_wrapper.h" IESizeOfContext
+ 
+ if enabled gcrypt; then
+     GCRYPT_CONFIG="${cross_prefix}libgcrypt-config"
+diff --git a/libavfilter/Makefile b/libavfilter/Makefile
+index 4b78b29..06ebd61 100644
+--- a/libavfilter/Makefile
++++ b/libavfilter/Makefile
+@@ -27,6 +27,7 @@ OBJS-$(HAVE_THREADS)                         += pthread.o
+ # subsystems
+ OBJS-$(CONFIG_QSVVPP)                        += qsvvpp.o
+ DNN-OBJS-$(CONFIG_LIBTENSORFLOW)             += dnn_backend_tf.o
++DNN-OBJS-$(CONFIG_LIBINFERENCE_ENGINE)       += dnn_backend_intel_ie.o inference.o
+ OBJS-$(CONFIG_DNN)                           += dnn_interface.o dnn_backend_native.o $(DNN-OBJS-yes)
+ 
+ # audio filters
+@@ -257,6 +258,7 @@ OBJS-$(CONFIG_HWUPLOAD_FILTER)               += vf_hwupload.o
+ OBJS-$(CONFIG_HYSTERESIS_FILTER)             += vf_hysteresis.o framesync.o
+ OBJS-$(CONFIG_IDET_FILTER)                   += vf_idet.o
+ OBJS-$(CONFIG_IL_FILTER)                     += vf_il.o
++OBJS-$(CONFIG_INFERENCE_DETECT_FILTER)       += vf_inference_detect.o
+ OBJS-$(CONFIG_INFLATE_FILTER)                += vf_neighbor.o
+ OBJS-$(CONFIG_INTERLACE_FILTER)              += vf_tinterlace.o
+ OBJS-$(CONFIG_INTERLEAVE_FILTER)             += f_interleave.o
+diff --git a/libavfilter/allfilters.c b/libavfilter/allfilters.c
+index c40c7e3..4c6fa26 100644
+--- a/libavfilter/allfilters.c
++++ b/libavfilter/allfilters.c
+@@ -244,6 +244,7 @@ extern AVFilter ff_vf_hwupload_cuda;
+ extern AVFilter ff_vf_hysteresis;
+ extern AVFilter ff_vf_idet;
+ extern AVFilter ff_vf_il;
++extern AVFilter ff_vf_inference_detect;
+ extern AVFilter ff_vf_inflate;
+ extern AVFilter ff_vf_interlace;
+ extern AVFilter ff_vf_interleave;
+diff --git a/libavfilter/dnn_backend_intel_ie.c b/libavfilter/dnn_backend_intel_ie.c
+new file mode 100644
+index 0000000..76746c8
+--- /dev/null
++++ b/libavfilter/dnn_backend_intel_ie.c
+@@ -0,0 +1,440 @@
++/*
++ * Copyright (c) 2018 Pengfei Qu, Lin Xie
++ *
++ * This file is part of FFmpeg.
++ *
++ * FFmpeg is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * FFmpeg is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with FFmpeg; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++ */
++
++/**
++ * @file
++ * DNN inference functions interface for intel inference engine backend.
++ */
++
++#include "dnn_backend_intel_ie.h"
++#include "libavformat/avio.h"
++#include <ie_api_wrapper.h>
++
++typedef struct DNNIntelIEModel {
++    void *context;
++    IEConfig config;
++    IEInputOutputInfo *input_infos;
++    IEInputOutputInfo *output_infos;
++} DNNIntelIEModel;
++
++static IETargetDeviceType get_device_type_id(DNNTargetDeviceType device_type) {
++    switch (device_type) {
++    case DNN_TARGET_DEVICE_DEFAULT:
++        return IE_Default;
++    case DNN_TARGET_DEVICE_BALANCED:
++        return IE_Balanced;
++    case DNN_TARGET_DEVICE_CPU:
++    case DNN_TARGET_DEVICE_CPU_FP16:
++        return IE_CPU;
++    case DNN_TARGET_DEVICE_GPU:
++    case DNN_TARGET_DEVICE_GPU_FP16:
++        return IE_GPU;
++    case DNN_TARGET_DEVICE_FPGA:
++    case DNN_TARGET_DEVICE_FPGA_FP16:
++        return IE_FPGA;
++    case DNN_TARGET_DEVICE_MYRIAD:
++    case DNN_TARGET_DEVICE_MYRIAD_FP16:
++        return IE_MYRIAD;
++    case DNN_TARGET_DEVICE_HETERO:
++        return IE_HETERO;
++    default:
++        return IE_Default;
++    }
++}
++
++static IELayoutType get_layout(DNNDataLayoutType layout)
++{
++    switch (layout) {
++    case DNN_DATA_LAYOUT_NCHW:
++        return IE_NCHW;
++    case DNN_DATA_LAYOUT_NHWC:
++        return IE_NHWC;
++    case DNN_DATA_LAYOUT_OIHW:
++        return IE_OIHW;
++    case DNN_DATA_LAYOUT_C:
++        return IE_C;
++    case DNN_DATA_LAYOUT_CHW:
++        return IE_CHW;
++    case DNN_DATA_LAYOUT_HW:
++        return IE_HW;
++    case DNN_DATA_LAYOUT_NC:
++        return IE_NC;
++    case DNN_DATA_LAYOUT_CN:
++        return IE_CN;
++    case DNN_DATA_LAYOUT_BLOCKED:
++        return IE_BLOCKED;
++    case DNN_DATA_LAYOUT_ANY:
++        return IE_ANY;
++    case DNN_DATA_LAYOUT_1D:
++        return IE_ANY;
++    default:
++        return IE_ANY;
++    }
++}
++
++static DNNDataLayoutType get_dnn_layout(IELayoutType layout)
++{
++    switch (layout) {
++    case IE_NCHW:
++        return DNN_DATA_LAYOUT_NCHW;
++    case IE_NHWC:
++        return DNN_DATA_LAYOUT_NHWC;
++    case IE_OIHW:
++        return DNN_DATA_LAYOUT_OIHW;
++    case IE_C:
++        return DNN_DATA_LAYOUT_C;
++    case IE_CHW:
++        return DNN_DATA_LAYOUT_CHW;
++    case IE_HW:
++        return DNN_DATA_LAYOUT_HW;
++    case IE_NC:
++        return DNN_DATA_LAYOUT_NC;
++    case IE_CN:
++        return DNN_DATA_LAYOUT_CN;
++    case IE_BLOCKED:
++        return DNN_DATA_LAYOUT_BLOCKED;
++    case IE_ANY:
++        return DNN_DATA_LAYOUT_ANY;
++    default:
++        return DNN_DATA_LAYOUT_ANY;
++    }
++}
++
++static IEPrecisionType get_precision(DNNDataPrecisionType precision)
++{
++    switch (precision) {
++    case DNN_DATA_PRECISION_MIXED:
++        return IE_MIXED;
++    case DNN_DATA_PRECISION_FP32:
++        return IE_FP32;
++    case DNN_DATA_PRECISION_FP16:
++        return IE_FP16;
++    case DNN_DATA_PRECISION_Q78:
++        return IE_Q78;
++    case DNN_DATA_PRECISION_I16:
++        return IE_I16;
++    case DNN_DATA_PRECISION_U8:
++        return IE_U8;
++    case DNN_DATA_PRECISION_I8:
++        return IE_I8;
++    case DNN_DATA_PRECISION_U16:
++        return IE_U16;
++    case DNN_DATA_PRECISION_I32:
++        return IE_I32;
++    case DNN_DATA_PRECISION_CUSTOM:
++        return IE_CUSTOM;
++    case DNN_DATA_PRECISION_UNSPECIFDNND:
++        return IE_UNSPECIFIED;
++    default:
++        return IE_FP32;
++    }
++}
++
++static DNNDataPrecisionType get_dnn_precision(IEPrecisionType precision)
++{
++    switch (precision) {
++    case IE_MIXED:
++        return DNN_DATA_PRECISION_MIXED;
++    case IE_FP32:
++        return DNN_DATA_PRECISION_FP32;
++    case IE_FP16:
++        return DNN_DATA_PRECISION_FP16;
++    case IE_Q78:
++        return DNN_DATA_PRECISION_Q78;
++    case IE_I16:
++        return DNN_DATA_PRECISION_I16;
++    case IE_U8:
++        return DNN_DATA_PRECISION_U8;
++    case IE_I8:
++        return DNN_DATA_PRECISION_I8;
++    case IE_U16:
++        return DNN_DATA_PRECISION_U16;
++    case IE_I32:
++        return DNN_DATA_PRECISION_I32;
++    case IE_CUSTOM:
++        return DNN_DATA_PRECISION_CUSTOM;
++    case IE_UNSPECIFIED:
++        return DNN_DATA_PRECISION_UNSPECIFDNND;
++    default:
++        return DNN_DATA_PRECISION_FP32;
++    }
++}
++
++static IEImageFormatType get_data_format(DNNDataFormat format)
++{
++    switch (format) {
++    case DNN_DATA_BGR_PACKED:
++    case DNN_DATA_BGRA_PACKED:
++        return IE_IMAGE_BGR_PACKED;
++    case DNN_DATA_BGR_PLANAR:
++    case DNN_DATA_BGRA_PLANAR:
++        return IE_IMAGE_BGR_PLANAR;
++    case DNN_DATA_RGB_PACKED:
++        return IE_IMAGE_RGB_PACKED;
++    case DNN_DATA_RGB_PLANAR:
++        return IE_IMAGE_RGB_PLANAR;
++    case DNN_DATA_GRAY_PLANAR:
++        return IE_IMAGE_GRAY_PLANAR;
++    case DNN_DATA_GENERIC_1D:
++        return IE_IMAGE_GENERIC_1D;
++    case DNN_DATA_GENERIC_2D:
++        return IE_IMAGE_GENERIC_2D;
++    default:
++        return IE_IMAGE_FORMAT_UNKNOWN;
++    }
++}
++
++static void set_model_config_internal(DNNIntelIEModel *ie_model, DNNModelIntelIEConfig *ie_config)
++{
++    ie_model->config.targetId      = get_device_type_id(ie_config->device);
++    ie_model->config.modelFileName = ie_config->model;
++    ie_model->config.cpuExtPath    = ie_config->cpu_extension;
++    ie_model->config.cldnnExtPath  = ie_config->gpu_extension;
++    ie_model->config.perfCounter   = 0;
++
++    ie_model->input_infos          = &(ie_model->config.inputInfos);
++    ie_model->output_infos         = &(ie_model->config.outputInfos);
++}
++
++static DNNReturnType get_execute_result_intel_ie(void *model, DNNIOData *result)
++{
++    unsigned int size = 0;
++    DNNIntelIEModel *ie_model = (DNNIntelIEModel *)model;
++
++    if (!model || !result)
++        return DNN_ERROR;
++
++    result->data = IEGetResultSpace(ie_model->context, result->in_out_idx, &size);
++    if (!result->data)
++        return DNN_ERROR;
++
++    result->size = size;
++    result->precision = DNN_DATA_PRECISION_FP32;
++
++    return DNN_SUCCESS;
++}
++
++static DNNReturnType get_input_info_intel_ie(void *model, DNNModelInfo *info)
++{
++    int id = 0;
++    DNNIntelIEModel *ie_model = (DNNIntelIEModel *)model;
++
++    if (!model || !info)
++        return DNN_ERROR;
++
++    IEGetModelInputInfo(ie_model->context, ie_model->input_infos);
++
++    if (ie_model->input_infos->numbers > DNN_INPUT_OUTPUT_NUM)
++        return DNN_ERROR;
++
++    for (id = 0; id < ie_model->input_infos->numbers; id++) {
++        info->width[id]     = ie_model->input_infos->width[id];
++        info->height[id]    = ie_model->input_infos->height[id];
++        info->channels[id]  = ie_model->input_infos->channels[id];
++        info->precision[id] = get_dnn_precision(ie_model->input_infos->precision[id]);
++        info->layout[id]    = get_dnn_layout(ie_model->input_infos->layout[id]);
++        info->is_image[id]  = 0;
++    }
++    info->batch_size = ie_model->input_infos->batch_size;
++    info->numbers    = ie_model->input_infos->numbers;
++
++    return DNN_SUCCESS;
++}
++
++static DNNReturnType set_input_info_intel_ie(void *model, DNNModelInfo *info)
++{
++    int id = 0;
++    DNNIntelIEModel *ie_model = (DNNIntelIEModel *)model;
++
++    if (!model || !info || info->numbers > DNN_INPUT_OUTPUT_NUM)
++        return DNN_ERROR;
++
++    for (id = 0; id < info->numbers; id++) {
++        ie_model->input_infos->precision[id] = get_precision(info->precision[id]);
++        ie_model->input_infos->layout[id]    = get_layout(info->layout[id]);
++        ie_model->input_infos->dataType[id]  = info->is_image[id];
++    }
++    ie_model->input_infos->numbers = info->numbers;
++
++    IESetModelInputInfo(ie_model->context, ie_model->input_infos);
++
++    return DNN_SUCCESS;
++}
++
++static DNNReturnType get_output_info_intel_ie(void *model, DNNModelInfo *info)
++{
++    int id = 0;
++    DNNIntelIEModel *ie_model = (DNNIntelIEModel *)model;
++
++    if (!model || !info)
++        return DNN_ERROR;
++
++    IEGetModelOutputInfo(ie_model->context, ie_model->output_infos);
++
++    if (ie_model->output_infos->numbers > DNN_INPUT_OUTPUT_NUM)
++        return DNN_ERROR;
++
++    for (id = 0; id < ie_model->output_infos->numbers; id++) {
++        info->width[id]     = ie_model->output_infos->width[id];
++        info->height[id]    = ie_model->output_infos->height[id];
++        info->channels[id]  = ie_model->output_infos->channels[id];
++        info->precision[id] = get_dnn_precision(ie_model->output_infos->precision[id]);
++        info->layout[id]    = get_dnn_layout(ie_model->output_infos->layout[id]);
++        info->is_image[id]  = 0;
++    }
++    info->batch_size = ie_model->output_infos->batch_size;
++    info->numbers    = ie_model->output_infos->numbers;
++
++    return DNN_SUCCESS;
++}
++
++static DNNReturnType set_output_info_intel_ie(void *model, DNNModelInfo *info)
++{
++    int id = 0;
++    DNNIntelIEModel *ie_model = (DNNIntelIEModel *)model;
++
++    if (!model || !info)
++        return DNN_ERROR;
++
++    if (info->numbers > DNN_INPUT_OUTPUT_NUM)
++        return DNN_ERROR;
++
++    for (id = 0; id < info->numbers; id++) {
++        ie_model->output_infos->precision[id] = get_precision(info->precision[id]);
++        ie_model->output_infos->layout[id]    = get_layout(info->layout[id]);
++        ie_model->output_infos->dataType[id]  = info->is_image[id];
++    }
++    ie_model->output_infos->numbers = info->numbers;
++
++    IESetModelOutputInfo(ie_model->context, ie_model->output_infos);
++
++    return DNN_SUCCESS;
++}
++
++static DNNReturnType set_input_intel_ie(void *model, const DNNIOData *input)
++{
++    IEData data;
++    DNNIntelIEModel *ie_model = (DNNIntelIEModel *)model;
++
++    if (!model || !input)
++        return DNN_ERROR;
++
++    memset(&data, 0, sizeof(IEData));
++
++    data.size         = input->size;
++    data.width        = input->width;
++    data.height       = input->height;
++    data.widthStride  = input->width_stride;
++    data.heightStride = input->height_stride;
++    data.buffer       = (void *)input->data;
++    data.channelNum   = input->channels;
++    data.batchIdx     = input->batch_idx;
++    data.precision    = get_precision(input->precision);
++    data.memType      = input->memory_type;
++    data.dataType     = input->is_image;
++    data.imageFormat  = get_data_format(input->data_format);
++
++    IESetInput(ie_model->context, input->in_out_idx, &data);
++
++    return DNN_SUCCESS;
++}
++
++static DNNReturnType create_model_intel_ie(void *model)
++{
++    DNNIntelIEModel *ie_model = (DNNIntelIEModel *)model;
++
++    if (!model)
++        return DNN_ERROR;
++
++    IECreateModel(ie_model->context, &ie_model->config);
++
++    return DNN_SUCCESS;
++}
++
++DNNModel* ff_dnn_load_model_intel_ie(void *config)
++{
++    DNNModel *model = NULL;
++    DNNIntelIEModel *ie_model = NULL;
++    DNNModelIntelIEConfig *ie_config = (DNNModelIntelIEConfig *)config;
++
++    if (!ie_config)
++        return NULL;
++
++    model = av_mallocz(sizeof(DNNModel));
++    if (!model)
++        return NULL;
++
++    ie_model = av_mallocz(sizeof(DNNIntelIEModel));
++    if (!ie_model) {
++        av_freep(&model);
++        return NULL;
++    }
++
++    set_model_config_internal(ie_model, ie_config);
++
++    ie_model->context = IEAllocateContext();
++    if (!ie_model->context) {
++        av_freep(&ie_model);
++        av_freep(&model);
++        return NULL;
++    }
++
++    IELoadModel(ie_model->context, &ie_model->config);
++
++    IESetBatchSize(ie_model->context, ie_config->batch_size);
++
++    model->model              = (void *)ie_model;
++    model->get_execute_result = &get_execute_result_intel_ie;
++    model->set_input          = &set_input_intel_ie;
++    model->get_input_info     = &get_input_info_intel_ie;
++    model->set_input_info     = &set_input_info_intel_ie;
++    model->get_output_info    = &get_output_info_intel_ie;
++    model->set_output_info    = &set_output_info_intel_ie;
++    model->create_model       = &create_model_intel_ie;
++
++    return model;
++}
++
++DNNReturnType ff_dnn_execute_model_intel_ie(const DNNModel *model)
++{
++    DNNIntelIEModel *ie_model = NULL;
++
++    if (!model)
++        return DNN_ERROR;
++
++    ie_model = (DNNIntelIEModel *)model->model;
++
++    IEForward(ie_model->context, IE_INFER_MODE_SYNC);
++
++    return DNN_SUCCESS;
++}
++
++void ff_dnn_free_model_intel_ie(DNNModel** model)
++{
++    DNNIntelIEModel * ie_model = NULL;
++
++    if (*model) {
++        ie_model = (DNNIntelIEModel *)(*model)->model;
++        IEFreeContext(ie_model->context);
++        av_freep(&ie_model);
++        av_freep(model);
++    }
++}
++
+diff --git a/libavfilter/dnn_backend_intel_ie.h b/libavfilter/dnn_backend_intel_ie.h
+new file mode 100644
+index 0000000..4879362
+--- /dev/null
++++ b/libavfilter/dnn_backend_intel_ie.h
+@@ -0,0 +1,40 @@
++/*
++ * Copyright (c) 2018 Pengfei Qu, Lin Xie
++ *
++ * This file is part of FFmpeg.
++ *
++ * FFmpeg is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * FFmpeg is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with FFmpeg; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++ */
++
++/**
++ * @file
++ * DNN inference functions interface for intel inference engine backend.
++ */
++
++
++#ifndef AVFILTER_DNN_BACKEND_INTEL_IE_H
++#define AVFILTER_DNN_BACKEND_INTEL_IE_H
++
++#include "dnn_interface.h"
++
++DNNModel *ff_dnn_load_model_intel_ie(void *model_config);
++
++DNNReturnType ff_dnn_execute_model_intel_ie(const DNNModel *model);
++
++void ff_dnn_free_model_intel_ie(DNNModel** model);
++
++DNNReturnType ff_dnn_create_model_intel_ie(const DNNModel *model);
++
++#endif
+diff --git a/libavfilter/dnn_data.h b/libavfilter/dnn_data.h
+new file mode 100644
+index 0000000..97ec675
+--- /dev/null
++++ b/libavfilter/dnn_data.h
+@@ -0,0 +1,165 @@
++/*
++ *
++ * This file is part of FFmpeg.
++ *
++ * FFmpeg is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * FFmpeg is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with FFmpeg; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++ */
++
++#ifndef AVFILTER_DNN_DATA_H
++#define AVFILTER_DNN_DATA_H
++
++/**
++* @enum TargetDevice
++* @brief Describes known device types
++*/
++typedef enum DNNTargetDeviceType {
++    DNN_TARGET_DEVICE_DEFAULT = 0,
++    DNN_TARGET_DEVICE_BALANCED = 1,
++    DNN_TARGET_DEVICE_CPU = 2,
++    DNN_TARGET_DEVICE_GPU = 3,
++    DNN_TARGET_DEVICE_FPGA = 4,
++    DNN_TARGET_DEVICE_MYRIAD = 5,
++    DNN_TARGET_DEVICE_HETERO = 8,
++    DNN_TARGET_DEVICE_CPU_FP16 = 9,
++    DNN_TARGET_DEVICE_GPU_FP16 = 10,
++    DNN_TARGET_DEVICE_FPGA_FP16 = 11,
++    DNN_TARGET_DEVICE_MYRIAD_FP16 = 12,
++} DNNTargetDeviceType;
++
++/**
++* @enum Precision
++* @brief Describes Precision types
++*/
++typedef enum DNNDataPrecisionType {
++    DNN_DATA_PRECISION_UNSPECIFDNND = 255, /**< Unspecified value. Used by default */
++    DNN_DATA_PRECISION_MIXED = 0,  /**< Mixed value. Can be received from network. No applicable for tensors */
++    DNN_DATA_PRECISION_FP32 = 10,  /**< 32bit floating point value */
++    DNN_DATA_PRECISION_FP16 = 11,  /**< 16bit floating point value */
++    DNN_DATA_PRECISION_Q78 = 20,   /**< 16bit specific signed fixed point precision */
++    DNN_DATA_PRECISION_I16 = 30,   /**< 16bit signed integer value */
++    DNN_DATA_PRECISION_U8 = 40,    /**< 8bit unsigned integer value */
++    DNN_DATA_PRECISION_I8 = 50,    /**< 8bit signed integer value */
++    DNN_DATA_PRECISION_U16 = 60,   /**< 16bit unsigned integer value */
++    DNN_DATA_PRECISION_I32 = 70,   /**< 32bit signed integer value */
++    DNN_DATA_PRECISION_CUSTOM = 80 /**< custom precision has it's own name and size of elements */
++} DNNDataPrecisionType;
++
++/**
++* @enum Layout
++* @brief Layouts that the inference engine supports
++*/
++typedef enum DNNDataLayoutType {
++    DNN_DATA_LAYOUT_ANY = 0,// "any" layout
++    DNN_DATA_LAYOUT_NCHW = 1,// I/O data layouts
++    DNN_DATA_LAYOUT_NHWC = 2,
++    DNN_DATA_LAYOUT_OIHW = 64,// weight layouts
++    DNN_DATA_LAYOUT_C = 96,// bias layouts
++    DNN_DATA_LAYOUT_CHW = 128,// Single image layout (for mean image)
++    DNN_DATA_LAYOUT_HW = 192, // 2D
++    DNN_DATA_LAYOUT_NC = 193,
++    DNN_DATA_LAYOUT_CN = 194,
++    DNN_DATA_LAYOUT_BLOCKED = 200,
++    DNN_DATA_LAYOUT_1D = 201, //1D output only
++} DNNDataLayoutType;
++
++/**
++* @enum Memory Type
++* @brief memory type that the inference engine supports?
++*/
++typedef enum DNNMemoryType {
++    DNN_MEM_DEFAULT = 0,
++    DNN_MEM_HOST = 1,
++    DNN_MEM_GPU = 2,
++    DNN_MEM_SHARED = 3,
++    DNN_MEM_OTHERS = 4,
++} DNNMemoryType;
++
++/**
++* @enum Model data format
++*/
++typedef enum DNNDataFormat {
++    DNN_DATA_BGR_PACKED,
++    DNN_DATA_BGR_PLANAR,
++    DNN_DATA_BGRA_PACKED,
++    DNN_DATA_BGRA_PLANAR,
++    DNN_DATA_RGB_PACKED,
++    DNN_DATA_RGB_PLANAR,
++    DNN_DATA_GRAY_PLANAR, /* single channel*/
++    DNN_DATA_GENERIC_1D,  /* single channel 1D height/height_stride/channels are 1, output only*/
++    DNN_DATA_GENERIC_2D,  /* single channel 2D*/
++} DNNDataFormat;
++
++/**
++* @structure for DNN device
++*/
++typedef struct DNNDevice {
++    DNNTargetDeviceType type;
++    const char * name;
++} DNNDevice;
++
++/*
++* @struct inference engine Data(image etc) for input and output
++* @brief input/output data for the inference engine supports, it is design for 1D/2D data
++* spencial for single 1D: height/height_stride/channels are 1 width_stride=width, output only
++*/
++typedef struct DNNIOData {
++    void *data;             // the type depend on the data precision
++    unsigned int size;      // size=width x height x channels,it is for 1D output/input. unit is byte.
++    unsigned int width;
++    unsigned int height;
++    unsigned int width_stride;      // it is for HW memory or padding memory
++    unsigned int height_stride;
++    unsigned int channels;
++    // the index of the batch when batch size is bigger than 1. default value is zero when batch size is 1.
++    unsigned int batch_idx;
++    unsigned int is_image;
++    // it describe the data belong to the index of input/output for the model. Defatult value is 0.
++    unsigned int in_out_idx;
++    DNNDataPrecisionType precision; //DNN_DATA_PRECISION_FP32 or FP16 etc
++    DNNMemoryType memory_type;
++    DNNDataFormat data_format;
++} DNNIOData;
++
++/**
++* @struct model input info
++* @brief model input info
++*/
++#define DNN_INPUT_OUTPUT_NUM 10
++typedef struct DNNModelInfo {
++    unsigned int width[DNN_INPUT_OUTPUT_NUM];
++    unsigned int height[DNN_INPUT_OUTPUT_NUM];
++    unsigned int channels[DNN_INPUT_OUTPUT_NUM];
++    DNNDataPrecisionType precision[DNN_INPUT_OUTPUT_NUM];
++    DNNDataLayoutType layout[DNN_INPUT_OUTPUT_NUM];
++    // 0 non-image; 1 image.
++    unsigned int is_image[DNN_INPUT_OUTPUT_NUM];
++    unsigned int batch_size;
++    unsigned int numbers;
++} DNNModelInfo;
++
++/**
++* @struct model Configuration for the backend of Intel Inference engine
++* @brief Configuration for the model of Intel Inference engine
++*/
++typedef struct DNNModelIntelIEConfig {
++    char *model;
++    char *labels;
++    int   device;
++    int   batch_size;
++    char *cpu_extension;
++    char *gpu_extension;
++} DNNModelIntelIEConfig;
++
++#endif
+diff --git a/libavfilter/dnn_interface.c b/libavfilter/dnn_interface.c
+index 86fc283..a321e67 100644
+--- a/libavfilter/dnn_interface.c
++++ b/libavfilter/dnn_interface.c
+@@ -26,6 +26,7 @@
+ #include "dnn_interface.h"
+ #include "dnn_backend_native.h"
+ #include "dnn_backend_tf.h"
++#include "dnn_backend_intel_ie.h"
+ #include "libavutil/mem.h"
+ 
+ DNNModule *ff_get_dnn_module(DNNBackendType backend_type)
+@@ -53,6 +54,16 @@ DNNModule *ff_get_dnn_module(DNNBackendType backend_type)
+         return NULL;
+     #endif
+         break;
++    case DNN_INTEL_IE:
++    #if (CONFIG_LIBINFERENCE_ENGINE == 1)
++        dnn_module->load_model_with_config = &ff_dnn_load_model_intel_ie;
++        dnn_module->execute_model          = &ff_dnn_execute_model_intel_ie;
++        dnn_module->free_model             = &ff_dnn_free_model_intel_ie;
++    #else
++        av_freep(&dnn_module);
++        return NULL;
++    #endif
++        break;
+     default:
+         av_log(NULL, AV_LOG_ERROR, "Module backend_type is not native or tensorflow\n");
+         av_freep(&dnn_module);
+diff --git a/libavfilter/dnn_interface.h b/libavfilter/dnn_interface.h
+index e367343..96c6131 100644
+--- a/libavfilter/dnn_interface.h
++++ b/libavfilter/dnn_interface.h
+@@ -26,9 +26,11 @@
+ #ifndef AVFILTER_DNN_INTERFACE_H
+ #define AVFILTER_DNN_INTERFACE_H
+ 
++#include "dnn_data.h"
++
+ typedef enum {DNN_SUCCESS, DNN_ERROR} DNNReturnType;
+ 
+-typedef enum {DNN_NATIVE, DNN_TF} DNNBackendType;
++typedef enum {DNN_NATIVE, DNN_TF, DNN_INTEL_IE} DNNBackendType;
+ 
+ typedef struct DNNData{
+     float *data;
+@@ -41,6 +43,22 @@ typedef struct DNNModel{
+     // Sets model input and output, while allocating additional memory for intermediate calculations.
+     // Should be called at least once before model execution.
+     DNNReturnType (*set_input_output)(void *model, DNNData *input, DNNData *output);
++
++    // Get the result after the model execuation. Returns DNN_ERROR otherwise. the result is stored in the result->data. the backend is responsible to fill the other structure fields.
++    // The user should parse the result independently according to the output data structure format. the structure are defined by the user.
++    DNNReturnType (*get_execute_result)(void *model, DNNIOData *result);
++    // Set/feed the model with specified input data. Returns DNN_ERROR otherwise.
++    DNNReturnType (*set_input)(void *model, const DNNIOData *input);
++    // Get the input info of the model. Returns DNN_ERROR otherwise.
++    DNNReturnType (*get_input_info)(void *model, DNNModelInfo *info);
++    // Set the input info of the model. Returns DNN_ERROR otherwise.
++    DNNReturnType (*set_input_info)(void *model, DNNModelInfo *info);
++    // Get the output info of the model. Returns DNN_ERROR otherwise.
++    DNNReturnType (*get_output_info)(void *model, DNNModelInfo *info);
++    // Set the output info of the model. Returns DNN_ERROR otherwise.
++    DNNReturnType (*set_output_info)(void *model, DNNModelInfo *info);
++    // the model/NN will be created layer by layer according to the model backend type and model graph
++    DNNReturnType (*create_model)(void *model);
+ } DNNModel;
+ 
+ // Stores pointers to functions for loading, executing, freeing DNN models for one of the backends.
+@@ -51,6 +69,9 @@ typedef struct DNNModule{
+     DNNReturnType (*execute_model)(const DNNModel *model);
+     // Frees memory allocated for model.
+     void (*free_model)(DNNModel **model);
++
++    // Loads model and parameters from given configuration. Returns NULL if it is not possible.
++    DNNModel *(*load_model_with_config)(void *config);
+ } DNNModule;
+ 
+ // Initializes DNNModule depending on chosen backend.
+diff --git a/libavfilter/inference.c b/libavfilter/inference.c
+new file mode 100644
+index 0000000..ea788ba
+--- /dev/null
++++ b/libavfilter/inference.c
+@@ -0,0 +1,268 @@
++/*
++ * This file is part of FFmpeg.
++ *
++ * FFmpeg is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * FFmpeg is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with FFmpeg; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++ */
++
++/**
++ * @file
++ * inference base function
++ */
++
++#include "formats.h"
++#include "internal.h"
++#include "avfilter.h"
++#include "libavcodec/avcodec.h"
++#include "libavformat/avformat.h"
++#include "libswscale/swscale.h"
++#include "libavutil/pixdesc.h"
++#include "libavutil/avassert.h"
++
++#include "inference.h"
++
++struct InferenceBaseContext
++{
++    char *infer_type;
++    int   batch_size;
++    int   every_nth_frame;
++    float threshold;
++
++    DNNModule *module;
++    DNNModel  *model;
++
++    DNNModelInfo input_info;
++    DNNModelInfo output_info;
++
++    VideoPP vpp;
++};
++
++static int fill_dnn_data_from_frame(DNNIOData *data,
++                                    const AVFrame *frame,
++                                    int batch_idx,
++                                    int is_image,
++                                    int input_idx)
++{
++    int channels_nb;
++    DNNDataFormat dnn_fmt;
++    DNNDataPrecisionType precision;
++    enum AVPixelFormat pix_fmt = frame->format;
++
++    switch (pix_fmt)
++    {
++    case AV_PIX_FMT_GRAY8:
++        precision = DNN_DATA_PRECISION_U8;
++        dnn_fmt = DNN_DATA_GRAY_PLANAR;
++        channels_nb = 1;
++        break;
++    case AV_PIX_FMT_BGRA:
++        precision = DNN_DATA_PRECISION_U8;
++        dnn_fmt = DNN_DATA_BGR_PACKED;
++        channels_nb = 4;
++        break;
++    case AV_PIX_FMT_BGR24:
++        precision = DNN_DATA_PRECISION_U8;
++        dnn_fmt = DNN_DATA_BGR_PACKED;
++        channels_nb = 3;
++        break;
++    default:
++        av_log(NULL, AV_LOG_ERROR, "format unsupport!\n");
++        return AVERROR(EINVAL);
++    };
++
++    data->data           = (void *)frame->data[0];
++    data->width          = frame->width;
++    data->height         = frame->height;
++    data->width_stride   = frame->linesize[0]/channels_nb;
++    data->height_stride  = frame->height;
++    data->channels       = channels_nb;
++    data->data_format    = dnn_fmt;
++    data->precision      = precision;
++    data->memory_type    = DNN_MEM_HOST;
++    data->batch_idx      = batch_idx;
++    data->is_image       = is_image;
++    data->in_out_idx     = input_idx;
++
++    return 0;
++}
++
++int ff_inference_base_create(AVFilterContext *ctx,
++                             InferenceBaseContext **base,
++                             InferenceParam *param) {
++    int i, ret;
++    InferenceBaseContext *s;
++    DNNModelInfo *info;
++
++    if (!param)
++        return AVERROR(EINVAL);
++
++    s = av_mallocz(sizeof(*s));
++    if (!s)
++        return AVERROR(ENOMEM);
++
++    // TODO: handle hw ctx
++
++    s->module = ff_get_dnn_module(param->backend_type);
++    if (!s->module) {
++        av_log(ctx, AV_LOG_ERROR, "could not create DNN backend module\n");
++        av_freep(&s);
++        return AVERROR(ENOMEM);
++    }
++
++    // parameter sanity check
++    if (param->batch_size <= 0) param->batch_size = 1;
++
++    DNNModelIntelIEConfig config = {
++        .model         = param->model_file,
++        .labels        = param->labels_file,
++        .device        = param->device_type,
++        .batch_size    = param->batch_size,
++        .cpu_extension = param->cpu_extension,
++        .gpu_extension = param->gpu_extension,
++    };
++    s->model = s->module->load_model_with_config(&config);
++    if (!s->model) {
++        av_log(ctx, AV_LOG_ERROR, "could not load DNN model\n");
++        av_freep(&s);
++        return AVERROR(ENOMEM);
++    }
++
++#define DNN_ERR_CHECK(ctx) \
++    if (ret != DNN_SUCCESS) { \
++        av_log(ctx, AV_LOG_ERROR, "Error in '%s' line %d: %d\n", __FUNCTION__, __LINE__, ret); \
++        goto fail; \
++    }\
++
++    ret = s->model->get_input_info(s->model->model, &s->input_info);
++    DNN_ERR_CHECK(ctx);
++
++    ret = s->model->get_output_info(s->model->model, &s->output_info);
++    DNN_ERR_CHECK(ctx);
++
++    info = &s->input_info;
++    for (i = 0; i < info->numbers; i++) {
++        info->layout[i]    = param->input_layout;
++        info->precision[i] = param->input_precision;
++        info->is_image[i]  = param->input_is_image;
++    }
++    ret = s->model->set_input_info(s->model->model, info);
++    DNN_ERR_CHECK(ctx);
++
++    s->batch_size      = param->batch_size;
++    s->every_nth_frame = param->every_nth_frame;
++    s->threshold       = param->threshold;
++
++    ret = s->model->create_model(s->model->model);
++    DNN_ERR_CHECK(ctx);
++
++    *base = s;
++#undef DNN_ERR_CHECK
++    return 0;
++fail:
++    av_freep(&s);
++    return ret;
++}
++
++int ff_inference_base_free(InferenceBaseContext **base)
++{
++    InferenceBaseContext *s = *base;
++
++    if (!s)
++        return 0;
++
++    if (s->vpp.device == VPP_DEVICE_SW) {
++        for (int i = 0; i < MAX_VPP_NUM; i++) {
++            if (s->vpp.frames[i])
++                av_frame_free(&s->vpp.frames[i]);
++            if (s->vpp.scale_contexts[i])
++                sws_freeContext(s->vpp.scale_contexts[i]);
++        }
++    }
++
++    if (s->module) {
++        s->module->free_model(&s->model);
++        av_freep(&s->module);
++    }
++
++    av_freep(base);
++    return 0;
++}
++
++int ff_inference_base_filter_frame(InferenceBaseContext *base, AVFrame *in)
++{
++    VideoPP       *vpp = &base->vpp;
++    DNNModelInfo *info = &base->input_info;
++    DNNReturnType dnn_ret;
++    DNNIOData input = { };
++
++    for (int i = 0; i < info->numbers; i++) {
++        if (!vpp->scale_contexts[i]) {
++            fill_dnn_data_from_frame(&input, in, 0, 1, i);
++        } else {
++            AVFrame *tmp = vpp->frames[i];
++            sws_scale(vpp->scale_contexts[i], (const uint8_t * const*)in->data,
++                      in->linesize, 0, in->height, tmp->data, tmp->linesize);
++            fill_dnn_data_from_frame(&input, tmp, 0, 1, i);
++        }
++        base->model->set_input(base->model->model, &input);
++    }
++
++    dnn_ret = base->module->execute_model(base->model);
++    av_assert0(dnn_ret == DNN_SUCCESS);
++
++    return 0;
++}
++
++int ff_inference_base_get_infer_result(InferenceBaseContext *base, InferTensorMeta *metadata)
++{
++    DNNModelInfo *info = &base->output_info;
++    DNNIOData     data = { };
++    DNNReturnType ret;
++
++    av_assert0(metadata != NULL);
++
++    // TODO: change to layer name for multiple outputs
++    data.in_out_idx = 0;
++
++    ret = base->model->get_execute_result(base->model->model, &data);
++    av_assert0(ret == DNN_SUCCESS);
++
++    //TODO: refine by new interface
++    metadata->dim_size  = 3;
++    metadata->dims[0]   = info->width[0];
++    metadata->dims[1]   = info->height[0];
++    metadata->dims[2]   = info->channels[0];
++    metadata->layout    = info->layout[0];
++    metadata->precision = info->precision[0];
++
++    metadata->data        = data.data;
++    metadata->total_bytes = data.size;
++
++    return 0;
++}
++
++DNNModelInfo* ff_inference_base_get_input_info(InferenceBaseContext *base)
++{
++    return &base->input_info;
++}
++
++DNNModelInfo* ff_inference_base_get_output_info(InferenceBaseContext *base)
++{
++    return &base->output_info;
++}
++
++VideoPP* ff_inference_base_get_vpp(InferenceBaseContext *base)
++{
++    return &base->vpp;
++}
+diff --git a/libavfilter/inference.h b/libavfilter/inference.h
+new file mode 100644
+index 0000000..8466f90
+--- /dev/null
++++ b/libavfilter/inference.h
+@@ -0,0 +1,108 @@
++/*
++ * This file is part of FFmpeg.
++ *
++ * FFmpeg is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * FFmpeg is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with FFmpeg; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++ */
++
++#ifndef AVFILTER_INFERENCE_H
++#define AVFILTER_INFERENCE_H
++
++#include "libavutil/common.h"
++#include "dnn_interface.h"
++
++typedef struct InferenceBaseContext InferenceBaseContext;
++
++typedef struct InferenceParam {
++    char  *model_file;
++    char  *labels_file;
++    int    backend_type;
++    int    device_type;
++    char  *cpu_extension;
++    char  *gpu_extension;
++
++    int    batch_size;
++    int    every_nth_frame;
++    float  threshold;
++
++    // TODO: inputs attributes are different
++    int    input_layout;
++    int    input_precision;
++    int    input_is_image; //!< image or data
++} InferenceParam;
++
++#define MAX_VPP_NUM DNN_INPUT_OUTPUT_NUM
++
++typedef enum { VPP_DEVICE_HW, VPP_DEVICE_SW } VPPDevice;
++
++typedef struct VideoPP {
++    int      device;
++    void    *scale_contexts[MAX_VPP_NUM];
++    AVFrame *frames[MAX_VPP_NUM];
++} VideoPP;
++
++#define MAX_TENSOR_DIM_NUM 8
++typedef struct InferTensorMeta {
++    size_t  dim_size;
++    size_t  dims[MAX_TENSOR_DIM_NUM];
++    int     layout;
++    int     precision;
++    char   *layer_name;
++    char   *model_name;
++    void   *data;
++    size_t  total_bytes;
++    AVBufferRef *labels;
++} InferTensorMeta;
++
++typedef struct InferDetection {
++    float x_min;
++    float y_min;
++    float x_max;
++    float y_max;
++    float confidence;
++    int   label_id;
++    int   object_id;
++    AVBufferRef *text;
++} InferDetection;
++
++/* dynamic bounding boxes array */
++typedef struct BBoxesArray {
++    InferDetection **bbox;
++    int              num;
++} BBoxesArray;
++
++/* dynamic labels array */
++typedef struct LabelsArray {
++    char **label;
++    int    num;
++} LabelsArray;
++
++typedef struct InferDetectionMeta {
++    LabelsArray *labels;
++    BBoxesArray *bboxes;
++} InferDetectionMeta;
++
++int ff_inference_base_create(AVFilterContext *avctx, InferenceBaseContext **base, InferenceParam *p);
++
++int ff_inference_base_free(InferenceBaseContext **base);
++
++int ff_inference_base_filter_frame(InferenceBaseContext *base, AVFrame *in);
++
++int ff_inference_base_get_infer_result(InferenceBaseContext *base, InferTensorMeta *metadata);
++
++DNNModelInfo* ff_inference_base_get_input_info(InferenceBaseContext *base);
++DNNModelInfo* ff_inference_base_get_output_info(InferenceBaseContext *base);
++VideoPP* ff_inference_base_get_vpp(InferenceBaseContext *base);
++
++#endif
+diff --git a/libavfilter/vf_inference_detect.c b/libavfilter/vf_inference_detect.c
+new file mode 100644
+index 0000000..66aa494
+--- /dev/null
++++ b/libavfilter/vf_inference_detect.c
+@@ -0,0 +1,429 @@
++/*
++ * This file is part of FFmpeg.
++ *
++ * FFmpeg is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * FFmpeg is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with FFmpeg; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++ */
++
++/**
++ * @file
++ * dnn inference detection filter
++ */
++
++#include "libavutil/opt.h"
++#include "libavutil/mem.h"
++#include "libavutil/eval.h"
++#include "libavutil/avassert.h"
++#include "libavutil/pixdesc.h"
++#include "libavutil/mathematics.h"
++
++#include "formats.h"
++#include "internal.h"
++#include "avfilter.h"
++#include "libavcodec/avcodec.h"
++#include "libavformat/avformat.h"
++#include "libswscale/swscale.h"
++
++#include "inference.h"
++#include "dnn_interface.h"
++
++#define OFFSET(x) offsetof(InferenceDetectContext, x)
++#define FLAGS (AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_FILTERING_PARAM)
++
++#define FUNC_ENTRY() printf("enter >>> %s\n", __FUNCTION__);
++#define FUNC_EXIT()  printf("exit  <<< %s\n", __FUNCTION__);
++
++typedef struct InferenceDetectContext {
++    const AVClass *class;
++
++    InferenceBaseContext *base;
++
++    char  *model_file;
++    int    backend_type;
++    int    device_type;
++
++    int    batch_size;
++    int    every_nth_frame;
++    float  threshold;
++
++    int    input_layout;
++    int    input_precision;
++    int    input_is_image;
++
++    char  *name;
++    char  *params;
++    int  (*init)  (AVFilterContext *ctx, const char *args);
++    void (*uninit)(AVFilterContext *ctx);
++    int  (*end_frame_filter)(AVFilterContext *ctx, InferTensorMeta *data, AVFrame *frame);
++    void  *priv;
++} InferenceDetectContext;
++
++static void infer_detect_metadata_buffer_free(void *opaque, uint8_t *data)
++{
++    int i;
++    InferDetectionMeta *meta = (InferDetectionMeta *)data;
++    LabelsArray *labels = meta->labels;
++    BBoxesArray *bboxes = meta->bboxes;
++
++    if (bboxes) {
++        for (i = 0; i < bboxes->num; i++) {
++            InferDetection *p = bboxes->bbox[i];
++            av_freep(&p);
++        }
++        av_freep(&bboxes);
++    }
++
++    if (labels) {
++        for (i = 0; i < labels->num; i++) {
++            char *l = labels->label[i];
++            av_freep(&l);
++        }
++        av_freep(&labels);
++    }
++
++    av_free(data);
++}
++
++typedef struct FaceDetectContext {
++    int max_num;
++
++} FaceDetectContext;
++
++static int  face_init(AVFilterContext *ctx, const char *args) {return 0;}
++static void face_uninit(AVFilterContext *ctx) {}
++
++static int  face_end_frame_filter(AVFilterContext *ctx, InferTensorMeta *meta, AVFrame *frame)
++{
++    int i;
++    InferenceDetectContext *s = ctx->priv;
++    int object_size           = meta->dims[0];
++    int max_proposal_count    = meta->dims[1];
++    const float *detection    = (float *)meta->data;
++    AVBufferRef *ref;
++    AVFrameSideData *sd;
++    InferDetectionMeta *detect_meta = NULL;
++
++    BBoxesArray *boxes        = av_mallocz(sizeof(BBoxesArray));
++    if (!boxes)
++        return AVERROR(ENOMEM);
++
++    detect_meta = av_malloc(sizeof(InferDetectionMeta));
++    if (!detect_meta)
++        return AVERROR(ENOMEM);
++
++    // FIXME: output object size standard??
++    av_assert0(object_size == 7);
++
++    av_assert0(meta->precision == DNN_DATA_PRECISION_FP32);
++
++    av_assert0(meta->total_bytes >= max_proposal_count * object_size * sizeof(float));
++
++    for (i = 0; i < max_proposal_count; i++) {
++        InferDetection *new_bbox = av_mallocz(sizeof(InferDetection));
++
++        new_bbox->label_id   = (int)detection[i * object_size + 1];
++        new_bbox->confidence = detection[i * object_size + 2];
++        new_bbox->x_min      = detection[i * object_size + 3];
++        new_bbox->y_min      = detection[i * object_size + 4];
++        new_bbox->x_max      = detection[i * object_size + 5];
++        new_bbox->y_max      = detection[i * object_size + 6];
++
++        if (new_bbox->confidence < s->threshold) {
++            av_freep(&new_bbox);
++            break;
++        }
++
++        av_dynarray_add(&boxes->bbox, &boxes->num, new_bbox);
++    }
++
++    // dump face detected meta
++    for (i = 0; i < boxes->num; i++) {
++        InferDetection *p = boxes->bbox[i];
++        av_log(ctx, AV_LOG_DEBUG, "DETECT META - label:%d confi:%f coord:%f %f %f %f\n",
++               p->label_id, p->confidence, p->x_min, p->y_min, p->x_max, p->y_max);
++    }
++
++    ref = av_buffer_create((uint8_t *)detect_meta, sizeof(*detect_meta),
++                           &infer_detect_metadata_buffer_free, NULL, 0);
++    if (!ref)
++        return AVERROR(ENOMEM);
++
++    detect_meta->bboxes = boxes;
++    detect_meta->labels = NULL;
++
++    // add meta data to side data
++    sd = av_frame_new_side_data_from_buf(frame, AV_FRAME_DATA_INFERENCE_DETECTION, ref);
++    if (!sd) {
++        av_buffer_unref(&ref);
++        av_log(NULL, AV_LOG_ERROR, "could not add new side data\n");
++        return AVERROR(ENOMEM);
++    }
++
++    return 0;
++}
++
++typedef struct EmotionDetectContext {
++    int max_num;
++
++} EmotionDetectContext;
++static int  emotion_init(AVFilterContext *ctx, const char *args) {return 0;}
++static void emotion_uninit(AVFilterContext *ctx) {}
++static int  emotion_end_frame_filter(AVFilterContext *ctx, InferTensorMeta *data, AVFrame *frame) { return 0; }
++
++typedef struct LogoDetectContext {
++    int max_num;
++
++} LogoDetectContext;
++static int  logo_init(AVFilterContext *ctx, const char *args) {return 0;}
++static void logo_uninit(AVFilterContext *ctx) {}
++static int  logo_end_frame_filter(AVFilterContext *ctx, InferTensorMeta *data, AVFrame *frame) { return 0; }
++
++static int query_formats(AVFilterContext *context)
++{
++    AVFilterFormats *formats_list;
++    const enum AVPixelFormat pixel_formats[] = {
++        AV_PIX_FMT_YUV420P,  AV_PIX_FMT_YUV422P,  AV_PIX_FMT_YUV444P,
++        AV_PIX_FMT_YUVJ420P, AV_PIX_FMT_YUVJ422P, AV_PIX_FMT_YUVJ444P,
++        AV_PIX_FMT_YUV410P,  AV_PIX_FMT_YUV411P,  AV_PIX_FMT_GRAY8,
++        AV_PIX_FMT_BGR24,    AV_PIX_FMT_BGRA,     AV_PIX_FMT_NONE};
++
++    formats_list = ff_make_format_list(pixel_formats);
++    if (!formats_list) {
++        av_log(context, AV_LOG_ERROR, "could not create formats list\n");
++        return AVERROR(ENOMEM);
++    }
++
++    return ff_set_common_formats(context, formats_list);
++}
++
++static int config_input(AVFilterLink *inlink)
++{
++    int i;
++    AVFilterContext      *ctx        = inlink->dst;
++    InferenceDetectContext *s        = ctx->priv;
++    enum AVPixelFormat expect_format = AV_PIX_FMT_BGR24;
++
++    const AVPixFmtDescriptor *desc   = av_pix_fmt_desc_get(inlink->format);
++    DNNModelInfo *info               = ff_inference_base_get_input_info(s->base);
++    VideoPP *vpp                     = ff_inference_base_get_vpp(s->base);
++
++    for (i = 0; i < info->numbers; i++) {
++        av_log(ctx, AV_LOG_DEBUG, "input info [%d] %d - %d %d %d - %d %d %d\n",
++               i, info->batch_size, info->width[i], info->height[i], info->channels[i],
++               info->is_image[i], info->precision[i], info->layout[i]);
++    }
++
++    vpp->device = (desc->flags & AV_PIX_FMT_FLAG_HWACCEL) ? VPP_DEVICE_HW : VPP_DEVICE_SW;
++
++    // TODO: now just handle sw vpp
++    for (i = 0; i < info->numbers; i++) {
++        if (expect_format   != inlink->format ||
++            info->width[i]  != inlink->w      ||
++            info->height[i] != inlink->h)
++        {
++            int ret;
++            AVFrame *frame;
++
++            vpp->scale_contexts[i] = sws_getContext(
++                inlink->w,      inlink->h,       inlink->format,
++                info->width[i], info->height[i], expect_format,
++                SWS_BILINEAR, NULL, NULL, NULL);
++
++            if (!vpp->scale_contexts[i]) {
++                av_log(ctx, AV_LOG_ERROR, "Impossible to create scale context");
++                return AVERROR(EINVAL);
++            }
++
++            frame = av_frame_alloc();
++            if (!frame)
++                return AVERROR(ENOMEM);
++
++            frame->format = expect_format;
++            frame->width  = info->width[i];
++            frame->height = info->height[i];
++
++            ret = av_frame_get_buffer(frame, 0);
++            if (ret < 0) {
++                av_frame_free(&frame);
++                return ret;
++            }
++            vpp->frames[i] = frame;
++        }
++    }
++
++    return 0;
++}
++
++static int config_output(AVFilterLink *outlink)
++{
++    AVFilterContext      *ctx = outlink->src;
++    InferenceDetectContext *s = ctx->priv;
++
++    DNNModelInfo *info = ff_inference_base_get_output_info(s->base);
++
++    for (int i = 0; i < info->numbers; i++) {
++        av_log(ctx, AV_LOG_DEBUG, "output info [%d] %d - %d %d %d - %d %d %d\n",
++            i, info->batch_size,
++            info->width[i], info->height[i], info->channels[i],
++            info->is_image[i], info->precision[i], info->layout[i]);
++    }
++
++    // TODO: define how to handle model output data
++
++    return 0;
++}
++
++typedef struct DetectFilterEntry {
++    const char *name;
++    size_t priv_size;
++    int  (*init)(AVFilterContext *ctx, const char *args);
++    void (*uninit)(AVFilterContext *ctx);
++    int  (*end_frame_filter)(AVFilterContext *ctx, InferTensorMeta *data, AVFrame *frame);
++} DetectFilterEntry;
++
++static const DetectFilterEntry detect_filter_entries[] = {
++    { "face",    sizeof(FaceDetectContext),    face_init,    face_uninit,    face_end_frame_filter },
++    { "emotion", sizeof(EmotionDetectContext), emotion_init, emotion_uninit, emotion_end_frame_filter  },
++    { "logo",    sizeof(LogoDetectContext),    logo_init,    logo_uninit,    logo_end_frame_filter },
++};
++
++static av_cold int detect_init(AVFilterContext *ctx)
++{
++    int i, ret;
++    InferenceDetectContext *s = ctx->priv;
++    InferenceParam p = {};
++
++    av_assert0(s->model_file && s->name);
++
++    for (i = 0; i < FF_ARRAY_ELEMS(detect_filter_entries); i++) {
++        const DetectFilterEntry *entry = &detect_filter_entries[i];
++        if (!strcmp(s->name, entry->name)) {
++            s->init             = entry->init;
++            s->uninit           = entry->uninit;
++            s->end_frame_filter = entry->end_frame_filter;
++
++            if (!(s->priv = av_mallocz(entry->priv_size)))
++                return AVERROR(ENOMEM);
++        }
++    }
++
++    av_assert0(s->init);
++
++    av_assert0(s->backend_type == DNN_INTEL_IE);
++
++    p.model_file      = s->model_file;
++    p.backend_type    = s->backend_type;
++    p.device_type     = s->device_type;
++    p.batch_size      = s->batch_size;
++    p.every_nth_frame = s->every_nth_frame;
++    p.threshold       = s->threshold;
++    p.input_precision = DNN_DATA_PRECISION_U8;
++    p.input_layout    = DNN_DATA_LAYOUT_NCHW;
++    p.input_is_image  = 1;
++
++    ret = ff_inference_base_create(ctx, &s->base, &p);
++    if (ret < 0) {
++        av_log(ctx, AV_LOG_ERROR, "could not create inference\n");
++        return ret;
++    }
++
++    ret = s->init(ctx, s->params);
++    if (ret < 0) {
++        ff_inference_base_free(&s->base);
++        av_log(ctx, AV_LOG_ERROR, "init '%s' failed\n", s->name);
++        return ret;
++    }
++
++    return 0;
++}
++
++static av_cold void detect_uninit(AVFilterContext *ctx)
++{
++    InferenceDetectContext *s = ctx->priv;
++
++    ff_inference_base_free(&s->base);
++
++    av_freep(&s->priv);
++}
++
++static int filter_frame(AVFilterLink *inlink, AVFrame *in)
++{
++    int ret;
++    AVFilterContext *ctx      = inlink->dst;
++    InferenceDetectContext *s = ctx->priv;
++    AVFilterLink *outlink     = inlink->dst->outputs[0];
++    InferTensorMeta tensor_meta = { };
++
++    ret = ff_inference_base_filter_frame(s->base, in);
++    if (ret < 0)
++        goto fail;
++
++    ret = ff_inference_base_get_infer_result(s->base, &tensor_meta);
++    if (ret < 0)
++        goto fail;
++
++    s->end_frame_filter(ctx, &tensor_meta, in);
++
++    return ff_filter_frame(outlink, in);
++fail:
++    av_frame_free(&in);
++    return AVERROR(EIO);
++}
++
++static const AVOption inference_detect_options[] = {
++    { "dnn_backend", "DNN backend for model execution", OFFSET(backend_type),    AV_OPT_TYPE_FLAGS,  { .i64 = DNN_INTEL_IE },          0, 2,  FLAGS, "engine" },
++    { "model",       "path to model file for network",  OFFSET(model_file),      AV_OPT_TYPE_STRING, { .str = NULL},                   0, 0,  FLAGS },
++    { "device",      "running on device type",          OFFSET(device_type),     AV_OPT_TYPE_FLAGS,  { .i64 = DNN_TARGET_DEVICE_CPU }, 0, 12, FLAGS },
++    { "interval",    "detect every Nth frame",          OFFSET(every_nth_frame), AV_OPT_TYPE_INT,    { .i64 = 1 }, 0, 15, FLAGS},
++    { "batch_size",  "batch size per infer",            OFFSET(batch_size),      AV_OPT_TYPE_INT,    { .i64 = 1 }, 0, 1024, FLAGS},
++    { "threshold",   "threshod to filter output data",  OFFSET(threshold),       AV_OPT_TYPE_FLOAT,  { .dbl = 0.5}, 0, 1, FLAGS},
++
++    { "name",        "detection type name",             OFFSET(name),            AV_OPT_TYPE_STRING, .flags = FLAGS, "detection" },
++    { "filter_params", NULL,                            OFFSET(params),          AV_OPT_TYPE_STRING, .flags = FLAGS, "detection" },
++    { NULL }
++};
++
++AVFILTER_DEFINE_CLASS(inference_detect);
++
++static const AVFilterPad detect_inputs[] = {
++    {
++        .name          = "default",
++        .type          = AVMEDIA_TYPE_VIDEO,
++        .config_props  = config_input,
++        .filter_frame  = filter_frame,
++    },
++    { NULL }
++};
++
++static const AVFilterPad detect_outputs[] = {
++    {
++        .name          = "default",
++        .type          = AVMEDIA_TYPE_VIDEO,
++        .config_props  = config_output,
++    },
++    { NULL }
++};
++
++AVFilter ff_vf_inference_detect = {
++    .name          = "detect",
++    .description   = NULL_IF_CONFIG_SMALL("DNN Inference detection."),
++    .priv_size     = sizeof(InferenceDetectContext),
++    .query_formats = query_formats,
++    .init          = detect_init,
++    .uninit        = detect_uninit,
++    .inputs        = detect_inputs,
++    .outputs       = detect_outputs,
++    .priv_class    = &inference_detect_class,
++    .flags_internal = FF_FILTER_FLAG_HWFRAME_AWARE,
++};
+diff --git a/libavutil/frame.c b/libavutil/frame.c
+index 9b3fb13..0b228cd 100644
+--- a/libavutil/frame.c
++++ b/libavutil/frame.c
+@@ -836,6 +836,7 @@ const char *av_frame_side_data_name(enum AVFrameSideDataType type)
+     case AV_FRAME_DATA_S12M_TIMECODE:               return "SMPTE 12-1 timecode";
+     case AV_FRAME_DATA_SPHERICAL:                   return "Spherical Mapping";
+     case AV_FRAME_DATA_ICC_PROFILE:                 return "ICC profile";
++    case AV_FRAME_DATA_INFERENCE_DETECTION:         return "Inference detection metadata";
+ #if FF_API_FRAME_QP
+     case AV_FRAME_DATA_QP_TABLE_PROPERTIES:         return "QP table properties";
+     case AV_FRAME_DATA_QP_TABLE_DATA:               return "QP table data";
+diff --git a/libavutil/frame.h b/libavutil/frame.h
+index e2a2929..2dcf8da 100644
+--- a/libavutil/frame.h
++++ b/libavutil/frame.h
+@@ -142,6 +142,8 @@ enum AVFrameSideDataType {
+      */
+     AV_FRAME_DATA_ICC_PROFILE,
+ 
++    AV_FRAME_DATA_INFERENCE_DETECTION,
++
+ #if FF_API_FRAME_QP
+     /**
+      * Implementation-specific description of the format of AV_FRAME_QP_TABLE_DATA.
+-- 
+2.7.4
+
