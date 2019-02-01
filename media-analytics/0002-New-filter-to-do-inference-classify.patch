@@ -1,7 +1,7 @@
-From c9e5727a98198f9c7cdc5e4ec791a97a8adfeeb5 Mon Sep 17 00:00:00 2001
+From 59689da70657f32c839795de3355b54668a0089d Mon Sep 17 00:00:00 2001
 From: Lin Xie <lin.xie@intel.com>
 Date: Thu, 17 Jan 2019 15:48:31 +0800
-Subject: [PATCH 2/2] New filter to do inference classify
+Subject: [PATCH] New filter to do inference classify
 
 * Add classify filter and support multiple models in a row
 * Add a trick to keep side data refbuf when do frame copy
@@ -15,11 +15,11 @@ Signed-off-by: Lin Xie <lin.xie@intel.com>
  libavfilter/allfilters.c            |   1 +
  libavfilter/inference.c             | 127 ++++++++-
  libavfilter/inference.h             |  44 ++-
- libavfilter/vf_inference_classify.c | 520 ++++++++++++++++++++++++++++++++++++
+ libavfilter/vf_inference_classify.c | 523 ++++++++++++++++++++++++++++++++++++
  libavfilter/vf_inference_detect.c   |  28 +-
  libavutil/frame.c                   |   7 +-
  libavutil/frame.h                   |   2 +
- 9 files changed, 712 insertions(+), 20 deletions(-)
+ 9 files changed, 715 insertions(+), 20 deletions(-)
  create mode 100644 libavfilter/vf_inference_classify.c
 
 diff --git a/configure b/configure
@@ -343,10 +343,10 @@ index 8466f90..eebfd10 100644
  #endif
 diff --git a/libavfilter/vf_inference_classify.c b/libavfilter/vf_inference_classify.c
 new file mode 100644
-index 0000000..3469292
+index 0000000..625fb97
 --- /dev/null
 +++ b/libavfilter/vf_inference_classify.c
-@@ -0,0 +1,520 @@
+@@ -0,0 +1,523 @@
 +/*
 + * This file is part of FFmpeg.
 + *
@@ -526,6 +526,7 @@ index 0000000..3469292
 +                                              InferTensorMeta *meta,
 +                                              InferClassificationMeta *c_meta)
 +{
++    InferenceClassifyContext *s = ctx->priv;
 +    const float *data = (float *)meta->data;
 +
 +    InferClassification *classify = av_mallocz(sizeof(*classify));
@@ -545,6 +546,7 @@ index 0000000..3469292
 +        // 0 - Femal, 1 - Male
 +        classify->label_id   = data[0] > data[1] ? 0 : 1;
 +        classify->confidence = data[classify->label_id];
++        classify->label_buf  = av_buffer_ref(s->label_bufs[model_index]);
 +        dump_gender(ctx, classify->label_id, classify->confidence);
 +    }
 +
@@ -637,6 +639,7 @@ index 0000000..3469292
 +        fread(buffer, sizeof(buffer), 1, fp);
 +        fclose(fp);
 +
++        buffer[strcspn(buffer, "\n")] = 0;
 +        split(buffer, ",", _labels, &labels_num, 100);
 +
 +        larray = av_mallocz(sizeof(*larray));
