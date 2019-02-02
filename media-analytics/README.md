@@ -23,5 +23,11 @@
     classify=models=./age_gender/age-gender-recognition-retail-0013.xml&./emotions_recognition/emotions-recognition-retail-0003.xml: \
     labels=./age_gender/gender-labels.txt&./emotions_recognition/emotion-labels.txt:names=age-gender&emotion" \
     -an -f null /dev/null
+
+    To write IE metadata to json format:
+    ffmpeg ...... -f iemetadata xxx.json
+
+    To write IE metadata and send kafka message:
+    ffmpeg ...... -f iemetadata kafka://<hostname:port>/<topic>
 ```
 
