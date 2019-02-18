@@ -1,4 +1,4 @@
-From f2600203e6bce2e4cc925f5dd48c570d0a5a0dcf Mon Sep 17 00:00:00 2001
+From d731a9c0104b4947677e7a4d245953c85e240795 Mon Sep 17 00:00:00 2001
 From: "Wang, Shaofei" <shaofei.wang@intel.com>
 Date: Fri, 1 Feb 2019 18:09:25 -0500
 Subject: [PATCH] Kafka protocol producer with librdkafka library format:
@@ -51,14 +51,14 @@ index 08bdcce..dfe7262 100755
      GCRYPT_CONFIG="${cross_prefix}libgcrypt-config"
      if "${GCRYPT_CONFIG}" --version > /dev/null 2>&1; then
 diff --git a/libavformat/Makefile b/libavformat/Makefile
-index f7e1698..8d2bbbd 100644
+index f7e1698..5b1f3ad 100644
 --- a/libavformat/Makefile
 +++ b/libavformat/Makefile
 @@ -626,6 +626,7 @@ OBJS-$(CONFIG_LIBRTMPTE_PROTOCOL)        += librtmp.o
  OBJS-$(CONFIG_LIBSMBCLIENT_PROTOCOL)     += libsmbclient.o
  OBJS-$(CONFIG_LIBSRT_PROTOCOL)           += libsrt.o
  OBJS-$(CONFIG_LIBSSH_PROTOCOL)           += libssh.o
-+OBJS-$(CONFIG_RDKAFKA_PROTOCOL)       += kafkaproto.o
++OBJS-$(CONFIG_RDKAFKA_PROTOCOL)          += kafkaproto.o
  
  # libavdevice dependencies
  OBJS-$(CONFIG_IEC61883_INDEV)            += dv.o
