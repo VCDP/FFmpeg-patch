@@ -1,0 +1,328 @@
+From 098ad7913a652e032f6239c481bef74210ff0175 Mon Sep 17 00:00:00 2001
+From: "Wang, Shaofei" <shaofei.wang@intel.com>
+Date: Wed, 20 Feb 2019 17:43:43 -0500
+Subject: [PATCH] Send metadata in a packet and refine the json format tool
+
+Change-Id: I8f8a2f885f40d4e6908cb92acbb2a14bc57c434e
+---
+ libavformat/iemetadataenc.c | 204 +++++++++++++++++++++++++-------------------
+ 1 file changed, 115 insertions(+), 89 deletions(-)
+
+diff --git a/libavformat/iemetadataenc.c b/libavformat/iemetadataenc.c
+index 7d47aae..8539e7f 100644
+--- a/libavformat/iemetadataenc.c
++++ b/libavformat/iemetadataenc.c
+@@ -29,14 +29,12 @@
+ #define JSON_HEAD "{\n"
+ #define JSON_TAIL "},\n"
+ #define JSON_ESCAPE "    "
+-#define JSON_ELEMENT_HEAD(name) #name ": {\n"
+-#define JSON_ARRAY_HEAD(name) #name ": [\n"
+ #define JSON_ARRAY_TAIL "]\n"
+ #define JSON_FVALUE(str, name, value) sprintf(str, "\"%s\": %.1f,\n", name, value)
+-#define JSON_IVALUE(str, name, value) sprintf(str, "\"%s\": %ld,\n", name, value)
++#define JSON_IVALUE(str, name, value) sprintf(str, "\"%s\": %d,\n", name, value)
+ #define JSON_STRING(str, name, value) sprintf(str, "\"%s\": \"%s\",\n", name, value)
+ 
+-#define BUFFER_SIZE 256
++#define BUFFER_SIZE (1024 * 1024)
+ 
+ typedef struct IeMetaDataMuxer {
+     char *meta_data_strings;
+@@ -49,6 +47,8 @@ static int fill_content(AVFormatContext *s, const char *str, int flush)
+     IeMetaDataMuxer *md = s->priv_data;
+     unsigned int len = strlen(str);
+ 
++    if (!str)
++        return 0;
+     if (str[len] == '\0')
+         len++;
+     if (((len + md->meta_data_length) > BUFFER_SIZE)) {
+@@ -70,7 +70,7 @@ static int escape(AVFormatContext *s, unsigned int n)
+ {
+     unsigned int i;
+     for (i = 0; i < n; i++)
+-        fill_content(s, JSON_ESCAPE, 1);
++        fill_content(s, JSON_ESCAPE, 0);
+     return 0;
+ }
+ 
+@@ -81,6 +81,82 @@ static int fill_line(AVFormatContext *s, const char *str, unsigned int num_esp,
+     return 0;
+ }
+ 
++static int pack(AVFormatContext *s, const char *org, ...)
++{
++    va_list argp;
++    int i, len;
++    char tmp_str[80];
++    const char *p = org;
++    char *name, *str;
++    int ipara;
++    float fpara;
++    IeMetaDataMuxer *md = s->priv_data;
++    len = strlen(org);
++
++    va_start(argp, org);
++    for (i = 0; i < len; i++) {
++        switch (p[i]) {
++            case '{':
++                fill_line(s, JSON_HEAD, md->current_escape_num, 0);
++                ++md->current_escape_num;
++                break;
++            case '}':
++            case ')':
++                fill_line(s, JSON_TAIL, --md->current_escape_num, 0);
++                break;
++            case '[': //group head
++                str = va_arg(argp, char*);
++                sprintf(tmp_str, "\"%s\": [\n", str);
++                fill_line(s, tmp_str, md->current_escape_num, 0);
++                ++md->current_escape_num;
++                break;
++            case ']':
++                fill_line(s, JSON_ARRAY_TAIL, --md->current_escape_num, 0);
++                break;
++            case '(': //element head
++                str = va_arg(argp, char*);
++                sprintf(tmp_str, "\"%s\": {\n", str);
++                fill_line(s, tmp_str, md->current_escape_num, 0);
++                ++md->current_escape_num;
++                break;
++            case 'i': //int value
++            case 'f': //float value
++            case 's': //str value
++                name = va_arg(argp, char*);
++                if (p[i] == 'i') {
++                    ipara = va_arg(argp, int);
++                    JSON_IVALUE(tmp_str, name, ipara);
++                } else if (p[i] == 'f') {
++                    fpara = va_arg(argp, double);
++                    JSON_FVALUE(tmp_str, name, fpara);
++                } else {
++                    str = va_arg(argp, char *);
++                    JSON_STRING(tmp_str, name, str);
++                }
++                fill_line(s, tmp_str, md->current_escape_num, 0);
++                break;
++            case 'S': //str only
++                str = va_arg(argp, char *);
++                fill_line(s, str, md->current_escape_num, 0);
++                break;
++            case ':':
++                fill_content(s, ": ", 0);
++                break;
++            case ',':
++                fill_content(s, ",\n", 0);
++                break;
++            case 'w': //flush write
++                avio_write(s->pb, md->meta_data_strings, md->meta_data_length);
++                avio_flush(s->pb);
++                md->meta_data_length = 0;
++                break;
++            default:
++                break;
++        }
++    }
++    return 0;
++}
++
+ static int init(AVFormatContext *s)
+ {
+     IeMetaDataMuxer *md = s->priv_data;
+@@ -90,7 +166,7 @@ static int init(AVFormatContext *s)
+         av_log(s, AV_LOG_ERROR, "fail to alloc buffer for meta data\n");
+     }
+     md->meta_data_length = 0;
+-    md->current_escape_num = 1;
++    md->current_escape_num = 0;
+     return 0;
+ }
+ 
+@@ -115,43 +191,29 @@ static int write_trailer(AVFormatContext *s)
+ static int jhead_write(AVFormatContext *s, AVFrame *frm_data)
+ {
+     char tmp_str[80];
+-    IeMetaDataMuxer *md = s->priv_data;
+ 
+-    fill_content(s, JSON_HEAD, 0);
+-    md->current_escape_num = 1;
+-    JSON_IVALUE(tmp_str, "timestamp", frm_data->best_effort_timestamp);
+-    fill_line(s, tmp_str, md->current_escape_num, 0);
+-    JSON_STRING(tmp_str, "source", "string");
+-    fill_line(s, tmp_str, md->current_escape_num, 0);
+     sprintf(tmp_str, "\"resolution\":{\"width\":%d,\"height\":%d},\n",
+             frm_data->width, frm_data->height);
+-    fill_line(s, tmp_str, md->current_escape_num, 0);
++    pack(s, "{isS", "timestamp", frm_data->best_effort_timestamp,
++            "source", "string",
++            tmp_str);
+     sprintf(tmp_str, "\"tag\":{\"custom_key\":\"custom_value\"},\n");
+-    fill_line(s, tmp_str, md->current_escape_num, 0);
+-
+-    fill_line(s, JSON_ARRAY_HEAD("objects"), md->current_escape_num, 1);
++    pack(s, "S[", tmp_str, "objects");
+ 
+     return 0;
+ }
+ 
+ static int jtail_write(AVFormatContext *s)
+ {
+-    IeMetaDataMuxer *md = s->priv_data;
+-
+-    fill_line(s, JSON_ARRAY_TAIL, md->current_escape_num, 0);
+-    md->current_escape_num = 0;
+-    fill_line(s, JSON_TAIL, md->current_escape_num, 1);
++    pack(s, "]}w");
+     return 0;
+ }
+ 
+ static int write_packet(AVFormatContext *s, AVPacket *pkt)
+ {
+-    IeMetaDataMuxer *md = s->priv_data;
+     int i, j, head_written = 0;
+     char tmp_str[80];
+     AVFrame *frm_data = (AVFrame *)pkt->data;
+-    if ( !frm_data )
+-        return 0;
+     AVFrameSideData *sd;
+     InferDetectionMeta *meta;
+     BBoxesArray *bboxes;
+@@ -159,6 +221,9 @@ static int write_packet(AVFormatContext *s, AVPacket *pkt)
+     InferClassificationMeta *cmeta;
+     ClassifyArray *c_array;
+ 
++    if (!frm_data)
++        return 0;
++
+     sd = av_frame_get_side_data(frm_data, AV_FRAME_DATA_INFERENCE_DETECTION);
+     c_sd = av_frame_get_side_data(frm_data, AV_FRAME_DATA_INFERENCE_CLASSIFICATION);
+     if (sd) {
+@@ -172,49 +237,27 @@ static int write_packet(AVFormatContext *s, AVPacket *pkt)
+                     head_written = 1;
+                 }
+ 
+-                md->current_escape_num++;
+                 for (i = 0; i < bboxes->num; i++) {
+-                    fill_line(s, JSON_HEAD, md->current_escape_num, 0);
+-
+-                    md->current_escape_num++;
+-                    fill_line(s, JSON_ELEMENT_HEAD("detection"), md->current_escape_num, 0);
+-                    md->current_escape_num++;
+-                    fill_line(s, JSON_ELEMENT_HEAD("bounding_box"), md->current_escape_num, 0);
+-
+-                    md->current_escape_num++;
+-                    JSON_FVALUE(tmp_str, "x_min", bboxes->bbox[i]->x_min);
+-                    fill_line(s, tmp_str, md->current_escape_num, 0);
+-                    JSON_FVALUE(tmp_str, "y_min", bboxes->bbox[i]->y_min);
+-                    fill_line(s, tmp_str, md->current_escape_num, 0);
+-                    JSON_FVALUE(tmp_str, "x_max", bboxes->bbox[i]->x_max);
+-                    fill_line(s, tmp_str, md->current_escape_num, 0);
+-                    JSON_FVALUE(tmp_str, "y_max", bboxes->bbox[i]->y_max);
+-                    fill_line(s, tmp_str, md->current_escape_num, 0);
+-
+-                    md->current_escape_num--;
+-                    fill_line(s, JSON_TAIL, md->current_escape_num, 0);
+-
+-                    JSON_IVALUE(tmp_str, "object_id", bboxes->bbox[i]->object_id);
+-                    fill_line(s, tmp_str, md->current_escape_num, 0);
+                     if (!bboxes->bbox[i]->label_buf) {
+-                        JSON_STRING(tmp_str, "label", "face");
++                        sprintf(tmp_str, "%s", "face");
+                     } else {
+                         // object detection label index start from 1
+                         int label_id = bboxes->bbox[i]->label_id - 1;
+                         LabelsArray *array = (LabelsArray*)(bboxes->bbox[i]->label_buf->data);
+-                        JSON_STRING(tmp_str, "label", array->label[label_id]);
++                        sprintf(tmp_str, "%s", array->label[label_id]);
+                     }
+ 
+-                    fill_line(s, tmp_str, md->current_escape_num, 0);
+-                    JSON_IVALUE(tmp_str, "label_id", bboxes->bbox[i]->label_id);
+-                    fill_line(s, tmp_str, md->current_escape_num, 0);
+-                    JSON_FVALUE(tmp_str, "confidence", bboxes->bbox[i]->confidence);
+-                    fill_line(s, tmp_str, md->current_escape_num, 0);
+-                    sprintf(tmp_str, "\"model\":{\"name\":\"\", \"version\":1},\n");
+-                    fill_line(s, tmp_str, md->current_escape_num, 0);
+-
+-                    md->current_escape_num--;
+-                    fill_line(s, JSON_TAIL, md->current_escape_num, 0);
++                    pack(s, "{((ffff)isifS)",
++                            "detection", "bounding_box",
++                            "x_min", bboxes->bbox[i]->x_min,
++                            "y_min", bboxes->bbox[i]->y_min,
++                            "x_max", bboxes->bbox[i]->x_max,
++                            "y_max", bboxes->bbox[i]->y_max,
++                            "object_id", bboxes->bbox[i]->object_id,
++                            "label", tmp_str,
++                            "label_id", bboxes->bbox[i]->label_id,
++                            "confidence", bboxes->bbox[i]->confidence,
++                            "\"model\":{\"name\":\"\", \"version\":1},\n");
+ 
+                     //emotion, age, gender
+                     if (c_sd) {
+@@ -225,49 +268,32 @@ static int write_packet(AVFormatContext *s, AVPacket *pkt)
+                                 for (j = 0; j < c_array->num; j++) {
+                                     if (c_array->classifications[j]->detect_id == i) {
+                                         char *name = c_array->classifications[j]->name;
+-                                        sprintf(tmp_str, "\"%s\": {\n", name);
+-                                        fill_line(s, tmp_str, md->current_escape_num, 0);
+                                         if (strncmp(name, "emotion", strlen("emotion")) == 0 ||
+                                                 strncmp(name, "gender", strlen("gender")) == 0 ||
+                                                 strncmp(name, "face_id", strlen("face_id")) == 0) {
+-                                            md->current_escape_num++;
+-                                            JSON_STRING(tmp_str, "label",
+-                                                    ((LabelsArray*)c_array->classifications[j]->label_buf->data)->label[c_array->classifications[j]->label_id]);
+-                                            fill_line(s, tmp_str, md->current_escape_num, 0);
+-                                            JSON_IVALUE(tmp_str, "label_id", c_array->classifications[j]->label_id);
+-                                            fill_line(s, tmp_str, md->current_escape_num, 0);
+-                                            JSON_FVALUE(tmp_str, "confidence", c_array->classifications[j]->confidence);
+-                                            fill_line(s, tmp_str, md->current_escape_num, 0);
+-                                            sprintf(tmp_str, "\"model\":{\"name\":\"\", \"version\":1},\n");
+-                                            fill_line(s, tmp_str, md->current_escape_num, 0);
+-
+-                                            md->current_escape_num--;
+-                                            fill_line(s, JSON_TAIL, md->current_escape_num, 0);
++                                            pack(s, "(sifS)",
++                                                    name,
++                                                    "label", ((LabelsArray*)c_array->classifications[j]->label_buf->data)->label[c_array->classifications[j]->label_id],
++                                                    "label_id", c_array->classifications[j]->label_id,
++                                                    "confidence", c_array->classifications[j]->confidence,
++                                                    "\"model\":{\"name\":\"\", \"version\":1},\n");
+                                         } else if (strncmp(name, "age", strlen("age")) == 0) {
+-                                            md->current_escape_num++;
+-                                            JSON_FVALUE(tmp_str, "value", c_array->classifications[j]->value);
+-                                            fill_line(s, tmp_str, md->current_escape_num, 0);
+-                                            JSON_FVALUE(tmp_str, "confidence", c_array->classifications[j]->confidence);
+-                                            fill_line(s, tmp_str, md->current_escape_num, 0);
+-                                            sprintf(tmp_str, "\"model\":{\"name\":\"\", \"version\":1},\n");
+-                                            fill_line(s, tmp_str, md->current_escape_num, 0);
+-
+-                                            md->current_escape_num--;
+-                                            fill_line(s, JSON_TAIL, md->current_escape_num, 0);
++                                            pack(s, "(ffS)",
++                                                    name,
++                                                    "value", c_array->classifications[j]->value,
++                                                    "confidence", c_array->classifications[j]->confidence,
++                                                    "\"model\":{\"name\":\"\", \"version\":1},\n");
+                                         }
+                                     }
+                                 }
+                             }
+                         }
+                     }
+-                    md->current_escape_num--;
+-                    fill_line(s, JSON_TAIL, md->current_escape_num, 1);
++                    pack(s, "}");
+                 }
+             }
+         }
+     }
+-
+-    md->current_escape_num--;
+     if (head_written)
+         jtail_write(s);
+ 
+-- 
+2.7.4
+
