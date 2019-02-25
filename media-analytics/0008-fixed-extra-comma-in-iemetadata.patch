@@ -1,0 +1,104 @@
+From 16ee7781890e81f1729e45531ebef5d7f11c7870 Mon Sep 17 00:00:00 2001
+From: "Wang, Shaofei" <shaofei.wang@intel.com>
+Date: Mon, 25 Feb 2019 18:32:21 -0500
+Subject: [PATCH] fixed extra comma in iemetadata
+
+Change-Id: Ia07542ae3cf06f2c6544ed7c02f1f32189f7a973
+---
+ libavformat/iemetadataenc.c | 32 +++++++++++++++++++++++---------
+ 1 file changed, 23 insertions(+), 9 deletions(-)
+
+diff --git a/libavformat/iemetadataenc.c b/libavformat/iemetadataenc.c
+index 6c0cade..aa3ccca 100644
+--- a/libavformat/iemetadataenc.c
++++ b/libavformat/iemetadataenc.c
+@@ -102,7 +102,17 @@ static int pack(AVFormatContext *s, const char *org, ...)
+                 break;
+             case '}':
+             case ')':
+-                fill_line(s, JSON_TAIL, --md->current_escape_num, 0);
++            case ']':
++                if (md->meta_data_strings[md->meta_data_length - 2] == ',') {
++                    md->meta_data_strings[md->meta_data_length - 2] =
++                        md->meta_data_strings[md->meta_data_length - 1];
++                    --md->meta_data_length;
++                }
++                escape(s, --md->current_escape_num);
++                if (p[i] != ']')
++                    fill_content(s, "}", 0);
++                else
++                    fill_content(s, "]", 0);
+                 break;
+             case '[': //group head
+                 str = va_arg(argp, char*);
+@@ -110,9 +120,6 @@ static int pack(AVFormatContext *s, const char *org, ...)
+                 fill_line(s, tmp_str, md->current_escape_num, 0);
+                 ++md->current_escape_num;
+                 break;
+-            case ']':
+-                fill_line(s, JSON_ARRAY_TAIL, --md->current_escape_num, 0);
+-                break;
+             case '(': //element head
+                 str = va_arg(argp, char*);
+                 sprintf(tmp_str, "\"%s\": {\n", str);
+@@ -145,6 +152,9 @@ static int pack(AVFormatContext *s, const char *org, ...)
+             case ',':
+                 fill_content(s, ",\n", 0);
+                 break;
++            case 'n': // \n
++                fill_content(s, "\n", 0);
++                break;
+             case 'w': //flush write
+                 avio_write(s->pb, md->meta_data_strings, md->meta_data_length);
+                 avio_flush(s->pb);
+@@ -212,7 +222,11 @@ static int jhead_write(AVFormatContext *s, AVFrame *frm_data, const char *tag)
+ 
+ static int jtail_write(AVFormatContext *s)
+ {
+-    pack(s, "]}w");
++    IeMetaDataMuxer *md = s->priv_data;
++
++    pack(s, "]n},w");
++    md->meta_data_length = 0;
++
+     return 0;
+ }
+ 
+@@ -253,7 +267,7 @@ static int write_packet(AVFormatContext *s, AVPacket *pkt)
+                         sprintf(tmp_str, "%s", array->label[label_id]);
+                     }
+ 
+-                    pack(s, "{((ffff)isifS)",
++                    pack(s, "{((ffff),isifS),",
+                             "detection", "bounding_box",
+                             "x_min", bboxes->bbox[i]->x_min,
+                             "y_min", bboxes->bbox[i]->y_min,
+@@ -277,14 +291,14 @@ static int write_packet(AVFormatContext *s, AVPacket *pkt)
+                                         if (strncmp(name, "emotion", strlen("emotion")) == 0 ||
+                                                 strncmp(name, "gender", strlen("gender")) == 0 ||
+                                                 strncmp(name, "face_id", strlen("face_id")) == 0) {
+-                                            pack(s, "(sifS)",
++                                            pack(s, "(sifS),",
+                                                     name,
+                                                     "label", ((LabelsArray*)c_array->classifications[j]->label_buf->data)->label[c_array->classifications[j]->label_id],
+                                                     "label_id", c_array->classifications[j]->label_id,
+                                                     "confidence", c_array->classifications[j]->confidence,
+                                                     "\"model\":{\"name\":\"\", \"version\":1},\n");
+                                         } else if (strncmp(name, "age", strlen("age")) == 0) {
+-                                            pack(s, "(ffS)",
++                                            pack(s, "(ffS),",
+                                                     name,
+                                                     "value", c_array->classifications[j]->value,
+                                                     "confidence", c_array->classifications[j]->confidence,
+@@ -295,7 +309,7 @@ static int write_packet(AVFormatContext *s, AVPacket *pkt)
+                             }
+                         }
+                     }
+-                    pack(s, "}");
++                    pack(s, "},");
+                 }
+             }
+         }
+-- 
+2.7.4
+
