@@ -1,4 +1,4 @@
-From 59689da70657f32c839795de3355b54668a0089d Mon Sep 17 00:00:00 2001
+From 496aa35db719e03b1847845581a96bff096f1e2c Mon Sep 17 00:00:00 2001
 From: Lin Xie <lin.xie@intel.com>
 Date: Thu, 17 Jan 2019 15:48:31 +0800
 Subject: [PATCH] New filter to do inference classify
@@ -10,7 +10,7 @@ Subject: [PATCH] New filter to do inference classify
 
 Signed-off-by: Lin Xie <lin.xie@intel.com>
 ---
- configure                           |   2 +
+ configure                           |   4 +
  libavfilter/Makefile                |   1 +
  libavfilter/allfilters.c            |   1 +
  libavfilter/inference.c             | 127 ++++++++-
@@ -19,18 +19,20 @@ Signed-off-by: Lin Xie <lin.xie@intel.com>
  libavfilter/vf_inference_detect.c   |  28 +-
  libavutil/frame.c                   |   7 +-
  libavutil/frame.h                   |   2 +
- 9 files changed, 715 insertions(+), 20 deletions(-)
+ 9 files changed, 717 insertions(+), 20 deletions(-)
  create mode 100644 libavfilter/vf_inference_classify.c
 
 diff --git a/configure b/configure
-index 68b7dfb..08bdcce 100755
+index 68b7dfb..fb87f47 100755
 --- a/configure
 +++ b/configure
-@@ -3408,6 +3408,8 @@ fspp_filter_deps="gpl"
+@@ -3408,6 +3408,10 @@ fspp_filter_deps="gpl"
  geq_filter_deps="gpl"
  histeq_filter_deps="gpl"
  hqdn3d_filter_deps="gpl"
++inference_classify_filter_deps="libinference_engine"
 +inference_classify_filter_select="dnn"
++inference_detect_filter_deps="libinference_engine"
 +inference_detect_filter_select="dnn"
  interlace_filter_deps="gpl"
  kerndeint_filter_deps="gpl"
