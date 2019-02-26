@@ -1,4 +1,4 @@
-From 16ee7781890e81f1729e45531ebef5d7f11c7870 Mon Sep 17 00:00:00 2001
+From 116dfccaa4a40e888146e5edc82a2678c1cef383 Mon Sep 17 00:00:00 2001
 From: "Wang, Shaofei" <shaofei.wang@intel.com>
 Date: Mon, 25 Feb 2019 18:32:21 -0500
 Subject: [PATCH] fixed extra comma in iemetadata
@@ -9,7 +9,7 @@ Change-Id: Ia07542ae3cf06f2c6544ed7c02f1f32189f7a973
  1 file changed, 23 insertions(+), 9 deletions(-)
 
 diff --git a/libavformat/iemetadataenc.c b/libavformat/iemetadataenc.c
-index 6c0cade..aa3ccca 100644
+index 6c0cade..8dadc6f 100644
 --- a/libavformat/iemetadataenc.c
 +++ b/libavformat/iemetadataenc.c
 @@ -102,7 +102,17 @@ static int pack(AVFormatContext *s, const char *org, ...)
@@ -58,7 +58,7 @@ index 6c0cade..aa3ccca 100644
 -    pack(s, "]}w");
 +    IeMetaDataMuxer *md = s->priv_data;
 +
-+    pack(s, "]n},w");
++    pack(s, "]n}nw");
 +    md->meta_data_length = 0;
 +
      return 0;
