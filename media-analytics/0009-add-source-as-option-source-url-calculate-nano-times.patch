@@ -1,16 +1,16 @@
-From 2f29af54c7d980b1cad953d8e41adf7887d3a75f Mon Sep 17 00:00:00 2001
+From 172e8a6a21c712484f721b1b39ab5a62da869c83 Mon Sep 17 00:00:00 2001
 From: "Wang, Shaofei" <shaofei.wang@intel.com>
 Date: Tue, 26 Feb 2019 23:45:22 -0500
 Subject: [PATCH] add source as option -source <url>, calculate nano timestamp,
- and add -seg_time <> option
+ and add -customer_tag "key|value" option
 
 Change-Id: I352311ef5fd7e4b7e8a0bf65dc3da0e19dbed0da
 ---
- libavformat/iemetadataenc.c | 39 +++++++++++++++++++++++++++++++++------
- 1 file changed, 33 insertions(+), 6 deletions(-)
+ libavformat/iemetadataenc.c | 47 ++++++++++++++++++++++++++++++++++++++-------
+ 1 file changed, 40 insertions(+), 7 deletions(-)
 
 diff --git a/libavformat/iemetadataenc.c b/libavformat/iemetadataenc.c
-index ac321f8..8adbc13 100644
+index ac321f8..eec3a05 100644
 --- a/libavformat/iemetadataenc.c
 +++ b/libavformat/iemetadataenc.c
 @@ -24,7 +24,8 @@
@@ -38,7 +38,7 @@ index ac321f8..8adbc13 100644
      size_t meta_data_length;
      unsigned int current_escape_num;
 +    char *source;
-+    double seg_time;
++    char *tag;
  } IeMetaDataMuxer;
  
  static int fill_content(AVFormatContext *s, const char *str, int flush)
@@ -66,7 +66,7 @@ index ac321f8..8adbc13 100644
  }
  
  static int write_header(AVFormatContext *s)
-@@ -202,11 +209,15 @@ static int jhead_write(AVFormatContext *s, AVFrame *frm_data)
+@@ -202,13 +209,23 @@ static int jhead_write(AVFormatContext *s, AVFrame *frm_data)
  {
      char tmp_str[80];
      IeMetaDataMuxer *md = s->priv_data;
@@ -78,13 +78,22 @@ index ac321f8..8adbc13 100644
              frm_data->width, frm_data->height);
 -    pack(s, "{isS", "timestamp", frm_data->best_effort_timestamp,
 -            "source", "string",
-+    pack(s, "{IsfS", "timestamp", nano_ts,
++    pack(s, "{IsS", "timestamp", nano_ts,
 +            "source", md->source,
-+            "seg_time", md->seg_time,
              tmp_str);
-     sprintf(tmp_str, "\"tag\":{\"custom_key\":\"custom_value\"},\n");
+-    sprintf(tmp_str, "\"tag\":{\"custom_key\":\"custom_value\"},\n");
++    if (!md->tag)
++        sprintf(tmp_str, "\"tag\":{\"custom_key\":\"custom_value\"},\n");
++    else {
++        char key[128] = "seg_time";
++        float value = 0.0;
++        sscanf(md->tag, "%127[^|]|%f", key, &value);
++        sprintf(tmp_str, "\"tag\":{\"%s\": %1.3f},\n", key, value);
++    }
      pack(s, "S[", tmp_str, "objects");
-@@ -314,16 +325,32 @@ static int write_packet(AVFormatContext *s, AVPacket *pkt)
+ 
+     return 0;
+@@ -314,16 +331,32 @@ static int write_packet(AVFormatContext *s, AVPacket *pkt)
      return 0;
  }
  
@@ -92,7 +101,7 @@ index ac321f8..8adbc13 100644
 +#define ENC AV_OPT_FLAG_ENCODING_PARAM
 +static const AVOption options[] = {
 +    { "source_url", "the source url/path to put into the json metadata", OFFSET(source), AV_OPT_TYPE_STRING, { .str = "auto" }, 0, 0, ENC },
-+    { "seg_time", "the customer seg time", OFFSET(seg_time), AV_OPT_TYPE_DOUBLE, { .dbl = -1.0 }, -1.0, DBL_MAX, ENC },
++    { "customer_tag", "the customer tag and value, usage: -tag key|value", OFFSET(tag), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, ENC },
 +    { NULL },
 +};
 +
