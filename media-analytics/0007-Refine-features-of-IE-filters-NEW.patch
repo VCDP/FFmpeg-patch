@@ -1,21 +1,19 @@
-From ad39fbb7039db9719aeb8c9f4b7174591e3337e6 Mon Sep 17 00:00:00 2001
+From f68eab30f898ebab5910d5a39b7373b13a3c13b8 Mon Sep 17 00:00:00 2001
 From: Lin Xie <lin.xie@intel.com>
-Date: Mon, 25 Feb 2019 18:00:31 +0800
+Date: Wed, 27 Feb 2019 07:32:27 +0800
 Subject: [PATCH] Refine features of IE filters
 
-* Add new option "custom_tag" in detect filter
-  format:    custom_tag=seg_time|100.002
 * Enable do inference with specific intervals
 * Change detection label index starting from 0
 
 Change-Id: I619ba4fe301fba5b0fd077b8f6bb2d5c714f137e
 ---
  libavfilter/inference.c             | 28 ++++++++++++++++++++--------
- libavfilter/inference.h             |  3 +--
+ libavfilter/inference.h             |  2 --
  libavfilter/vf_inference_classify.c | 30 +++++++++++++++++-------------
- libavfilter/vf_inference_detect.c   | 23 ++++++++++++++---------
- libavformat/iemetadataenc.c         | 16 +++++++++++-----
- 5 files changed, 63 insertions(+), 37 deletions(-)
+ libavfilter/vf_inference_detect.c   | 17 +++++++++--------
+ libavformat/iemetadataenc.c         |  3 +--
+ 5 files changed, 47 insertions(+), 33 deletions(-)
 
 diff --git a/libavfilter/inference.c b/libavfilter/inference.c
 index e569620..20934fc 100644
@@ -75,7 +73,7 @@ index e569620..20934fc 100644
  
      ret = s->model->create_model(s->model->model);
 diff --git a/libavfilter/inference.h b/libavfilter/inference.h
-index 843e05c..70526f4 100644
+index 843e05c..33de54b 100644
 --- a/libavfilter/inference.h
 +++ b/libavfilter/inference.h
 @@ -36,8 +36,6 @@ typedef struct InferenceParam {
@@ -87,14 +85,6 @@ index 843e05c..70526f4 100644
  
      // TODO: inputs attributes are different
      int    input_layout;
-@@ -108,6 +106,7 @@ typedef struct LabelsArray {
- 
- typedef struct InferDetectionMeta {
-     BBoxesArray *bboxes;
-+    char        *tags;
- } InferDetectionMeta;
- 
- typedef struct InferClassification {
 diff --git a/libavfilter/vf_inference_classify.c b/libavfilter/vf_inference_classify.c
 index cba547a..b2e435b 100644
 --- a/libavfilter/vf_inference_classify.c
@@ -191,7 +181,7 @@ index cba547a..b2e435b 100644
  };
  
 diff --git a/libavfilter/vf_inference_detect.c b/libavfilter/vf_inference_detect.c
-index 73d77ab..ae3405c 100644
+index 73d77ab..624cb47 100644
 --- a/libavfilter/vf_inference_detect.c
 +++ b/libavfilter/vf_inference_detect.c
 @@ -55,6 +55,7 @@ typedef struct InferenceDetectContext {
@@ -202,34 +192,15 @@ index 73d77ab..ae3405c 100644
      int    every_nth_frame;
      float  threshold;
  
-@@ -63,7 +64,7 @@ typedef struct InferenceDetectContext {
+@@ -63,7 +64,6 @@ typedef struct InferenceDetectContext {
      int    input_is_image;
  
      char  *name;
 -    char  *params;
-+    char  *custom_tag;
  
      AVBufferRef *label_buf;
  } InferenceDetectContext;
-@@ -126,7 +127,8 @@ static int detect_postprocess(AVFilterContext *ctx, InferTensorMeta *meta, AVFra
-     for (i = 0; i < max_proposal_count; i++) {
-         InferDetection *new_bbox = av_mallocz(sizeof(*new_bbox));
- 
--        new_bbox->label_id   = (int)detection[i * object_size + 1];
-+        // detection label index start from 1
-+        new_bbox->label_id   = (int)detection[i * object_size + 1] - 1;
-         new_bbox->confidence = detection[i * object_size + 2];
-         new_bbox->x_min      = detection[i * object_size + 3];
-         new_bbox->y_min      = detection[i * object_size + 4];
-@@ -158,6 +160,7 @@ static int detect_postprocess(AVFilterContext *ctx, InferTensorMeta *meta, AVFra
-         return AVERROR(ENOMEM);
- 
-     detect_meta->bboxes = boxes;
-+    detect_meta->tags   = s->custom_tag;
- 
-     // add meta data to side data
-     sd = av_frame_new_side_data_from_buf(frame, AV_FRAME_DATA_INFERENCE_DETECTION, ref);
-@@ -308,7 +311,6 @@ static av_cold int detect_init(AVFilterContext *ctx)
+@@ -308,7 +308,6 @@ static av_cold int detect_init(AVFilterContext *ctx)
          n = fread(buffer, sizeof(buffer), 1, fp);
          fclose(fp);
  
@@ -237,7 +208,7 @@ index 73d77ab..ae3405c 100644
          av_split(buffer, ",", _labels, &labels_num, 100);
  
          larray = av_mallocz(sizeof(*larray));
-@@ -329,8 +331,6 @@ static av_cold int detect_init(AVFilterContext *ctx)
+@@ -329,8 +328,6 @@ static av_cold int detect_init(AVFilterContext *ctx)
      p.backend_type    = s->backend_type;
      p.device_type     = s->device_type;
      p.batch_size      = s->batch_size;
@@ -246,7 +217,7 @@ index 73d77ab..ae3405c 100644
      p.input_precision = DNN_DATA_PRECISION_U8;
      p.input_layout    = DNN_DATA_LAYOUT_NCHW;
      p.input_is_image  = 1;
-@@ -362,6 +362,9 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *in)
+@@ -362,6 +359,9 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *in)
      AVFilterLink *outlink     = inlink->dst->outputs[0];
      InferTensorMeta tensor_meta = { };
  
@@ -256,7 +227,7 @@ index 73d77ab..ae3405c 100644
      ret = ff_inference_base_filter_frame(s->base, in);
      if (ret < 0)
          goto fail;
-@@ -372,6 +375,8 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *in)
+@@ -372,6 +372,8 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *in)
  
      detect_postprocess(ctx, &tensor_meta, in);
  
@@ -265,7 +236,7 @@ index 73d77ab..ae3405c 100644
      return ff_filter_frame(outlink, in);
  fail:
      av_frame_free(&in);
-@@ -383,12 +388,12 @@ static const AVOption inference_detect_options[] = {
+@@ -383,12 +385,11 @@ static const AVOption inference_detect_options[] = {
      { "model",       "path to model file for network",  OFFSET(model_file),      AV_OPT_TYPE_STRING, { .str = NULL},                   0, 0,  FLAGS },
      { "device",      "running on device type",          OFFSET(device_type),     AV_OPT_TYPE_FLAGS,  { .i64 = DNN_TARGET_DEVICE_CPU }, 0, 12, FLAGS },
      { "label",       "label file path for detection",   OFFSET(label_file),      AV_OPT_TYPE_STRING, { .str = NULL},                   0, 0,  FLAGS },
@@ -278,49 +249,14 @@ index 73d77ab..ae3405c 100644
  
      { "name",        "detection type name",             OFFSET(name),            AV_OPT_TYPE_STRING, .flags = FLAGS, "detection" },
 -    { "filter_params", NULL,                            OFFSET(params),          AV_OPT_TYPE_STRING, .flags = FLAGS, "detection" },
-+    { "custom_tag",  "customized tag and value",        OFFSET(custom_tag),      AV_OPT_TYPE_STRING, .flags = FLAGS, "detection" },
      { NULL }
  };
  
 diff --git a/libavformat/iemetadataenc.c b/libavformat/iemetadataenc.c
-index 8539e7f..6c0cade 100644
+index 8539e7f..506b82a 100644
 --- a/libavformat/iemetadataenc.c
 +++ b/libavformat/iemetadataenc.c
-@@ -188,7 +188,7 @@ static int write_trailer(AVFormatContext *s)
-     return 0;
- }
- 
--static int jhead_write(AVFormatContext *s, AVFrame *frm_data)
-+static int jhead_write(AVFormatContext *s, AVFrame *frm_data, const char *tag)
- {
-     char tmp_str[80];
- 
-@@ -197,7 +197,14 @@ static int jhead_write(AVFormatContext *s, AVFrame *frm_data)
-     pack(s, "{isS", "timestamp", frm_data->best_effort_timestamp,
-             "source", "string",
-             tmp_str);
--    sprintf(tmp_str, "\"tag\":{\"custom_key\":\"custom_value\"},\n");
-+    if (tag) {
-+        char key[128] = "seg_time";
-+        float value   = 0.0;
-+        sscanf(tag, "%127[^|]|%f", key, &value);
-+        sprintf(tmp_str, "\"tag\":{\"%s\": %1.3f},\n", key, value);
-+    } else {
-+        sprintf(tmp_str, "\"tag\":{\"custom_key\":\"custom_value\"},\n");
-+    }
-     pack(s, "S[", tmp_str, "objects");
- 
-     return 0;
-@@ -233,7 +240,7 @@ static int write_packet(AVFormatContext *s, AVPacket *pkt)
-             bboxes = meta->bboxes;
-             if (bboxes) {
-                 if (bboxes->num > 0) {
--                    jhead_write(s, frm_data);
-+                    jhead_write(s, frm_data, meta->tags);
-                     head_written = 1;
-                 }
- 
-@@ -241,8 +248,7 @@ static int write_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -241,8 +241,7 @@ static int write_packet(AVFormatContext *s, AVPacket *pkt)
                      if (!bboxes->bbox[i]->label_buf) {
                          sprintf(tmp_str, "%s", "face");
                      } else {
