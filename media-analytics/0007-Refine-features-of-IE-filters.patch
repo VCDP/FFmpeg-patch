@@ -1,4 +1,4 @@
-From f68eab30f898ebab5910d5a39b7373b13a3c13b8 Mon Sep 17 00:00:00 2001
+From 66fac57b2945c4f75aa7efebabf5e6ea12db29bf Mon Sep 17 00:00:00 2001
 From: Lin Xie <lin.xie@intel.com>
 Date: Wed, 27 Feb 2019 07:32:27 +0800
 Subject: [PATCH] Refine features of IE filters

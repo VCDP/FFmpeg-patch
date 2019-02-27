@@ -1,0 +1,123 @@
+From 2f29af54c7d980b1cad953d8e41adf7887d3a75f Mon Sep 17 00:00:00 2001
+From: "Wang, Shaofei" <shaofei.wang@intel.com>
+Date: Tue, 26 Feb 2019 23:45:22 -0500
+Subject: [PATCH] add source as option -source <url>, calculate nano timestamp,
+ and add -seg_time <> option
+
+Change-Id: I352311ef5fd7e4b7e8a0bf65dc3da0e19dbed0da
+---
+ libavformat/iemetadataenc.c | 39 +++++++++++++++++++++++++++++++++------
+ 1 file changed, 33 insertions(+), 6 deletions(-)
+
+diff --git a/libavformat/iemetadataenc.c b/libavformat/iemetadataenc.c
+index ac321f8..8adbc13 100644
+--- a/libavformat/iemetadataenc.c
++++ b/libavformat/iemetadataenc.c
+@@ -24,7 +24,8 @@
+ #include "libavutil/dict.h"
+ #include "libavfilter/avfilter.h"
+ #include "libavfilter/inference.h"
+-
++#include "libavutil/opt.h"
++#include <float.h>
+ 
+ #define JSON_HEAD "{\n"
+ #define JSON_TAIL "},\n"
+@@ -32,14 +33,18 @@
+ #define JSON_ARRAY_TAIL "]\n"
+ #define JSON_FVALUE(str, name, value) sprintf(str, "\"%s\": %.1f,\n", name, value)
+ #define JSON_IVALUE(str, name, value) sprintf(str, "\"%s\": %d,\n", name, value)
++#define JSON_LIVALUE(str, name, value) sprintf(str, "\"%s\": %ld,\n", name, value)
+ #define JSON_STRING(str, name, value) sprintf(str, "\"%s\": \"%s\",\n", name, value)
+ 
+ #define BUFFER_SIZE (1024 * 1024)
+ 
+ typedef struct IeMetaDataMuxer {
++    const AVClass *class;
+     char *meta_data_strings;
+     size_t meta_data_length;
+     unsigned int current_escape_num;
++    char *source;
++    double seg_time;
+ } IeMetaDataMuxer;
+ 
+ static int fill_content(AVFormatContext *s, const char *str, int flush)
+@@ -127,12 +132,13 @@ static int pack(AVFormatContext *s, const char *org, ...)
+                 ++md->current_escape_num;
+                 break;
+             case 'i': //int value
++            case 'I': //long int value
+             case 'f': //float value
+             case 's': //str value
+                 name = va_arg(argp, char*);
+-                if (p[i] == 'i') {
++                if (p[i] == 'i' || p[i] == 'I') {
+                     ipara = va_arg(argp, int);
+-                    JSON_IVALUE(tmp_str, name, ipara);
++                    p[i] == 'i' ? JSON_IVALUE(tmp_str, name, ipara) : JSON_LIVALUE(tmp_str, name, ipara);
+                 } else if (p[i] == 'f') {
+                     fpara = va_arg(argp, double);
+                     JSON_FVALUE(tmp_str, name, fpara);
+@@ -184,6 +190,7 @@ static void deinit(AVFormatContext *s)
+ {
+     IeMetaDataMuxer *md = s->priv_data;
+     av_free(md->meta_data_strings);
++
+ }
+ 
+ static int write_header(AVFormatContext *s)
+@@ -202,11 +209,15 @@ static int jhead_write(AVFormatContext *s, AVFrame *frm_data)
+ {
+     char tmp_str[80];
+     IeMetaDataMuxer *md = s->priv_data;
++    long nano_ts = s->streams[0] ?
++        av_q2d(s->streams[0]->time_base) * frm_data->best_effort_timestamp * 1000000 :
++        -1;
+ 
+     sprintf(tmp_str, "\"resolution\":{\"width\":%d,\"height\":%d},\n",
+             frm_data->width, frm_data->height);
+-    pack(s, "{isS", "timestamp", frm_data->best_effort_timestamp,
+-            "source", "string",
++    pack(s, "{IsfS", "timestamp", nano_ts,
++            "source", md->source,
++            "seg_time", md->seg_time,
+             tmp_str);
+     sprintf(tmp_str, "\"tag\":{\"custom_key\":\"custom_value\"},\n");
+     pack(s, "S[", tmp_str, "objects");
+@@ -314,16 +325,32 @@ static int write_packet(AVFormatContext *s, AVPacket *pkt)
+     return 0;
+ }
+ 
++#define OFFSET(x) offsetof(IeMetaDataMuxer, x)
++#define ENC AV_OPT_FLAG_ENCODING_PARAM
++static const AVOption options[] = {
++    { "source_url", "the source url/path to put into the json metadata", OFFSET(source), AV_OPT_TYPE_STRING, { .str = "auto" }, 0, 0, ENC },
++    { "seg_time", "the customer seg time", OFFSET(seg_time), AV_OPT_TYPE_DOUBLE, { .dbl = -1.0 }, -1.0, DBL_MAX, ENC },
++    { NULL },
++};
++
++static const AVClass iemetadata_muxer_class = {
++    .class_name = "iemetadata muxer",
++    .item_name  = av_default_item_name,
++    .option     = options,
++    .version    = LIBAVUTIL_VERSION_INT,
++};
++
+ AVOutputFormat ff_iemetadata_muxer = {
+     .name           = "iemetadata",
+     .long_name      = NULL_IF_CONFIG_SMALL("Inference engine meta data muxer"),
+     .extensions     = "json",
+     .priv_data_size = sizeof(IeMetaDataMuxer),
++    .priv_class     = &iemetadata_muxer_class,
+     .init           = init,
+     .deinit         = deinit,
+     .video_codec    = AV_CODEC_ID_WRAPPED_AVFRAME,
+     .write_header   = write_header,
+     .write_packet   = write_packet,
+     .write_trailer  = write_trailer,
+-    .flags          = AVFMT_VARIABLE_FPS | AVFMT_NOTIMESTAMPS,
++    .flags          = AVFMT_VARIABLE_FPS,
+ };
+-- 
+2.7.4
+

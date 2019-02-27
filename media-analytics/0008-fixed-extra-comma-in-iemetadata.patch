@@ -1,15 +1,15 @@
-From 116dfccaa4a40e888146e5edc82a2678c1cef383 Mon Sep 17 00:00:00 2001
+From 0f6eda754c2e6f6bc53307963f6b202b0b372a18 Mon Sep 17 00:00:00 2001
 From: "Wang, Shaofei" <shaofei.wang@intel.com>
 Date: Mon, 25 Feb 2019 18:32:21 -0500
 Subject: [PATCH] fixed extra comma in iemetadata
 
 Change-Id: Ia07542ae3cf06f2c6544ed7c02f1f32189f7a973
 ---
- libavformat/iemetadataenc.c | 32 +++++++++++++++++++++++---------
- 1 file changed, 23 insertions(+), 9 deletions(-)
+ libavformat/iemetadataenc.c | 33 ++++++++++++++++++++++++---------
+ 1 file changed, 24 insertions(+), 9 deletions(-)
 
 diff --git a/libavformat/iemetadataenc.c b/libavformat/iemetadataenc.c
-index 6c0cade..8dadc6f 100644
+index 506b82a..ac321f8 100644
 --- a/libavformat/iemetadataenc.c
 +++ b/libavformat/iemetadataenc.c
 @@ -102,7 +102,17 @@ static int pack(AVFormatContext *s, const char *org, ...)
@@ -51,7 +51,15 @@ index 6c0cade..8dadc6f 100644
              case 'w': //flush write
                  avio_write(s->pb, md->meta_data_strings, md->meta_data_length);
                  avio_flush(s->pb);
-@@ -212,7 +222,11 @@ static int jhead_write(AVFormatContext *s, AVFrame *frm_data, const char *tag)
+@@ -191,6 +201,7 @@ static int write_trailer(AVFormatContext *s)
+ static int jhead_write(AVFormatContext *s, AVFrame *frm_data)
+ {
+     char tmp_str[80];
++    IeMetaDataMuxer *md = s->priv_data;
+ 
+     sprintf(tmp_str, "\"resolution\":{\"width\":%d,\"height\":%d},\n",
+             frm_data->width, frm_data->height);
+@@ -205,7 +216,11 @@ static int jhead_write(AVFormatContext *s, AVFrame *frm_data)
  
  static int jtail_write(AVFormatContext *s)
  {
@@ -64,7 +72,7 @@ index 6c0cade..8dadc6f 100644
      return 0;
  }
  
-@@ -253,7 +267,7 @@ static int write_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -246,7 +261,7 @@ static int write_packet(AVFormatContext *s, AVPacket *pkt)
                          sprintf(tmp_str, "%s", array->label[label_id]);
                      }
  
@@ -73,7 +81,7 @@ index 6c0cade..8dadc6f 100644
                              "detection", "bounding_box",
                              "x_min", bboxes->bbox[i]->x_min,
                              "y_min", bboxes->bbox[i]->y_min,
-@@ -277,14 +291,14 @@ static int write_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -270,14 +285,14 @@ static int write_packet(AVFormatContext *s, AVPacket *pkt)
                                          if (strncmp(name, "emotion", strlen("emotion")) == 0 ||
                                                  strncmp(name, "gender", strlen("gender")) == 0 ||
                                                  strncmp(name, "face_id", strlen("face_id")) == 0) {
@@ -90,7 +98,7 @@ index 6c0cade..8dadc6f 100644
                                                      name,
                                                      "value", c_array->classifications[j]->value,
                                                      "confidence", c_array->classifications[j]->confidence,
-@@ -295,7 +309,7 @@ static int write_packet(AVFormatContext *s, AVPacket *pkt)
+@@ -288,7 +303,7 @@ static int write_packet(AVFormatContext *s, AVPacket *pkt)
                              }
                          }
                      }
