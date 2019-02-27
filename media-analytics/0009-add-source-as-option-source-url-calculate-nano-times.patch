@@ -1,4 +1,4 @@
-From 172e8a6a21c712484f721b1b39ab5a62da869c83 Mon Sep 17 00:00:00 2001
+From ca330274658fc57324afeb647a8759e427c613a4 Mon Sep 17 00:00:00 2001
 From: "Wang, Shaofei" <shaofei.wang@intel.com>
 Date: Tue, 26 Feb 2019 23:45:22 -0500
 Subject: [PATCH] add source as option -source <url>, calculate nano timestamp,
@@ -10,7 +10,7 @@ Change-Id: I352311ef5fd7e4b7e8a0bf65dc3da0e19dbed0da
  1 file changed, 40 insertions(+), 7 deletions(-)
 
 diff --git a/libavformat/iemetadataenc.c b/libavformat/iemetadataenc.c
-index ac321f8..eec3a05 100644
+index ac321f8..aa5e3c8 100644
 --- a/libavformat/iemetadataenc.c
 +++ b/libavformat/iemetadataenc.c
 @@ -24,7 +24,8 @@
@@ -71,7 +71,7 @@ index ac321f8..eec3a05 100644
      char tmp_str[80];
      IeMetaDataMuxer *md = s->priv_data;
 +    long nano_ts = s->streams[0] ?
-+        av_q2d(s->streams[0]->time_base) * frm_data->best_effort_timestamp * 1000000 :
++        av_q2d(s->streams[0]->time_base) * frm_data->pts * 1000000000 :
 +        -1;
  
      sprintf(tmp_str, "\"resolution\":{\"width\":%d,\"height\":%d},\n",
