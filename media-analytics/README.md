@@ -33,6 +33,7 @@
 
     To write IE metadata to json format:
     ffmpeg ...... -f iemetadata xxx.json
+    ffmpeg ...... -f iemetadata -source <url> -custom_tag "key1:value1,key2:value2..." xxx.json
 
     To write IE metadata and send kafka message:
     ffmpeg ...... -f iemetadata kafka://<hostname:port>/<topic>
