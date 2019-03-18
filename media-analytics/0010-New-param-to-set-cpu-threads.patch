@@ -1,0 +1,134 @@
+From bba9ebeb29dd473fe0bf033359747b74ac47034d Mon Sep 17 00:00:00 2001
+From: Lin Xie <lin.xie@intel.com>
+Date: Fri, 15 Mar 2019 17:23:27 +0800
+Subject: [PATCH] New param to set cpu threads
+
+Change-Id: I9b23ae67a27f50965fe906e6c0022b4ba57add3f
+---
+ libavfilter/dnn_backend_intel_ie.c  | 4 ++++
+ libavfilter/dnn_data.h              | 1 +
+ libavfilter/inference.c             | 1 +
+ libavfilter/inference.h             | 1 +
+ libavfilter/vf_inference_classify.c | 5 ++++-
+ libavfilter/vf_inference_detect.c   | 3 +++
+ 6 files changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/libavfilter/dnn_backend_intel_ie.c b/libavfilter/dnn_backend_intel_ie.c
+index 76746c8..2ef3dfa 100644
+--- a/libavfilter/dnn_backend_intel_ie.c
++++ b/libavfilter/dnn_backend_intel_ie.c
+@@ -400,6 +400,10 @@ DNNModel* ff_dnn_load_model_intel_ie(void *config)
+ 
+     IESetBatchSize(ie_model->context, ie_config->batch_size);
+ 
++    if (ie_config->cpu_threads > 0)
++        IESetCpuThreadsNum(ie_model->context,
++                           FFMIN(ie_config->cpu_threads, av_cpu_count()));
++
+     model->model              = (void *)ie_model;
+     model->get_execute_result = &get_execute_result_intel_ie;
+     model->set_input          = &set_input_intel_ie;
+diff --git a/libavfilter/dnn_data.h b/libavfilter/dnn_data.h
+index 97ec675..3ad6b0e 100644
+--- a/libavfilter/dnn_data.h
++++ b/libavfilter/dnn_data.h
+@@ -158,6 +158,7 @@ typedef struct DNNModelIntelIEConfig {
+     char *labels;
+     int   device;
+     int   batch_size;
++    int   cpu_threads;
+     char *cpu_extension;
+     char *gpu_extension;
+ } DNNModelIntelIEConfig;
+diff --git a/libavfilter/inference.c b/libavfilter/inference.c
+index 20934fc..a6abb4d 100644
+--- a/libavfilter/inference.c
++++ b/libavfilter/inference.c
+@@ -267,6 +267,7 @@ int ff_inference_base_create(AVFilterContext *ctx,
+         .labels        = param->labels_file,
+         .device        = param->device_type,
+         .batch_size    = param->batch_size,
++        .cpu_threads   = param->cpu_threads,
+         .cpu_extension = param->cpu_extension,
+         .gpu_extension = param->gpu_extension,
+     };
+diff --git a/libavfilter/inference.h b/libavfilter/inference.h
+index 33de54b..ee6da8d 100644
+--- a/libavfilter/inference.h
++++ b/libavfilter/inference.h
+@@ -36,6 +36,7 @@ typedef struct InferenceParam {
+     char  *gpu_extension;
+ 
+     int    batch_size;
++    int    cpu_threads;
+ 
+     // TODO: inputs attributes are different
+     int    input_layout;
+diff --git a/libavfilter/vf_inference_classify.c b/libavfilter/vf_inference_classify.c
+index b2e435b..19948e5 100644
+--- a/libavfilter/vf_inference_classify.c
++++ b/libavfilter/vf_inference_classify.c
+@@ -70,6 +70,7 @@ typedef struct InferenceClassifyContext {
+     int    device_type;
+ 
+     int    batch_size;
++    int    cpu_threads;
+     int    frame_number;
+     int    every_nth_frame;
+ 
+@@ -451,6 +452,7 @@ static av_cold int classify_init(AVFilterContext *ctx)
+     p.backend_type    = s->backend_type;
+     p.device_type     = s->device_type;
+     p.batch_size      = s->batch_size;
++    p.cpu_threads     = s->cpu_threads;
+     p.input_precision = DNN_DATA_PRECISION_U8;
+     p.input_layout    = DNN_DATA_LAYOUT_NCHW;
+     p.input_is_image  = 1;
+@@ -521,7 +523,7 @@ static av_cold int classify_init(AVFilterContext *ctx)
+             s->post_process[i] = &face_identify_result_process;
+         }
+ 
+-        if (s->init[i] && s->init[i](ctx, i) < 0)
++        if (s->init[i] && (ret = s->init[i](ctx, i)) < 0)
+             goto fail;
+     }
+ 
+@@ -699,6 +701,7 @@ static const AVOption inference_classify_options[] = {
+     { "label",          "labels for classify",             OFFSET(labels),          AV_OPT_TYPE_STRING, { .str = NULL},                   0, 0,    FLAGS },
+     { "name",           "classify type names",             OFFSET(names),           AV_OPT_TYPE_STRING, { .str = NULL},                   0, 0,    FLAGS },
+     { "device",         "running on device type",          OFFSET(device_type),     AV_OPT_TYPE_FLAGS,  { .i64 = DNN_TARGET_DEVICE_CPU }, 0, 12,   FLAGS },
++    { "cpu_threads",    "cpu threads number",              OFFSET(cpu_threads),     AV_OPT_TYPE_INT,    { .i64 = 0 },                     0, 1024, FLAGS},
+     { "interval",       "do infer every Nth frame",        OFFSET(every_nth_frame), AV_OPT_TYPE_INT,    { .i64 = 1 },                     1, 1024, FLAGS },
+     { "batch_size",     "batch size per infer",            OFFSET(batch_size),      AV_OPT_TYPE_INT,    { .i64 = 1 },                     1, 1024, FLAGS },
+     { "feature_file",   "registered face feature data",    OFFSET(feature_file),    AV_OPT_TYPE_STRING, { .str = NULL},                   0,    0, FLAGS, "face_identify" },
+diff --git a/libavfilter/vf_inference_detect.c b/libavfilter/vf_inference_detect.c
+index 624cb47..b1e91e5 100644
+--- a/libavfilter/vf_inference_detect.c
++++ b/libavfilter/vf_inference_detect.c
+@@ -55,6 +55,7 @@ typedef struct InferenceDetectContext {
+     int    device_type;
+ 
+     int    batch_size;
++    int    cpu_threads;
+     int    frame_number;
+     int    every_nth_frame;
+     float  threshold;
+@@ -328,6 +329,7 @@ static av_cold int detect_init(AVFilterContext *ctx)
+     p.backend_type    = s->backend_type;
+     p.device_type     = s->device_type;
+     p.batch_size      = s->batch_size;
++    p.cpu_threads     = s->cpu_threads;
+     p.input_precision = DNN_DATA_PRECISION_U8;
+     p.input_layout    = DNN_DATA_LAYOUT_NCHW;
+     p.input_is_image  = 1;
+@@ -385,6 +387,7 @@ static const AVOption inference_detect_options[] = {
+     { "model",       "path to model file for network",  OFFSET(model_file),      AV_OPT_TYPE_STRING, { .str = NULL},                   0, 0,  FLAGS },
+     { "device",      "running on device type",          OFFSET(device_type),     AV_OPT_TYPE_FLAGS,  { .i64 = DNN_TARGET_DEVICE_CPU }, 0, 12, FLAGS },
+     { "label",       "label file path for detection",   OFFSET(label_file),      AV_OPT_TYPE_STRING, { .str = NULL},                   0, 0,  FLAGS },
++    { "cpu_threads", "cpu threads number",              OFFSET(cpu_threads),     AV_OPT_TYPE_INT,    { .i64 = 0 },  0, 1024, FLAGS},
+     { "interval",    "detect every Nth frame",          OFFSET(every_nth_frame), AV_OPT_TYPE_INT,    { .i64 = 1 },  1, 1024, FLAGS},
+     { "batch_size",  "batch size per infer",            OFFSET(batch_size),      AV_OPT_TYPE_INT,    { .i64 = 1 },  1, 1024, FLAGS},
+     { "threshold",   "threshod to filter output data",  OFFSET(threshold),       AV_OPT_TYPE_FLOAT,  { .dbl = 0.5}, 0, 1,    FLAGS},
+-- 
+2.7.4
+
