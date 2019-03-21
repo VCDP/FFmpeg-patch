@@ -1,0 +1,54 @@
+From c853c1952e9a57ba205b9976378a1ac7d76c7bbf Mon Sep 17 00:00:00 2001
+From: Lin Xie <lin.xie@intel.com>
+Date: Thu, 21 Mar 2019 14:29:39 +0800
+Subject: [PATCH] Set a larger string buffer.
+
+* revert this change after a complete check applied
+
+Change-Id: If84b4e1b2781c35dba3caa9514b825cec2e0f18b
+---
+ libavformat/iemetadataenc.c | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/libavformat/iemetadataenc.c b/libavformat/iemetadataenc.c
+index 8249277..749074d 100644
+--- a/libavformat/iemetadataenc.c
++++ b/libavformat/iemetadataenc.c
+@@ -37,6 +37,7 @@
+ #define JSON_STRING(str, name, value) sprintf(str, "\"%s\": \"%s\",\n", name, value)
+ 
+ #define BUFFER_SIZE (1024 * 1024)
++#define TEMP_STRING_BUF_SIZE 4096
+ 
+ typedef struct IeMetaDataMuxer {
+     const AVClass *class;
+@@ -90,7 +91,7 @@ static int pack(AVFormatContext *s, const char *org, ...)
+ {
+     va_list argp;
+     int i, len;
+-    char tmp_str[80];
++    char tmp_str[TEMP_STRING_BUF_SIZE];
+     const char *p = org;
+     char *name, *str;
+     int ipara;
+@@ -207,7 +208,7 @@ static int write_trailer(AVFormatContext *s)
+ 
+ static int jhead_write(AVFormatContext *s, AVFrame *frm_data)
+ {
+-    char tmp_str[80];
++    char tmp_str[TEMP_STRING_BUF_SIZE];
+     IeMetaDataMuxer *md = s->priv_data;
+     long nano_ts = s->streams[0] ?
+         av_q2d(s->streams[0]->time_base) * frm_data->pts * 1000000000 :
+@@ -256,7 +257,7 @@ static int jtail_write(AVFormatContext *s)
+ static int write_packet(AVFormatContext *s, AVPacket *pkt)
+ {
+     int i, j, head_written = 0;
+-    char tmp_str[80];
++    char tmp_str[TEMP_STRING_BUF_SIZE];
+     AVFrame *frm_data = (AVFrame *)pkt->data;
+     AVFrameSideData *sd;
+     InferDetectionMeta *meta;
+-- 
+2.7.4
+
