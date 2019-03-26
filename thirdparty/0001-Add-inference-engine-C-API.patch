@@ -1,18 +1,18 @@
-From 08ed2c294479483036fe7448d766c6571e9f0695 Mon Sep 17 00:00:00 2001
+From 18b8ae0dfcbf1fe3b0ddc806f7c1df1617b7c98d Mon Sep 17 00:00:00 2001
 From: Lin Xie <lin.xie@intel.com>
 Date: Mon, 7 Jan 2019 18:02:30 +0800
 Subject: [PATCH] Add inference engine C API.
 
 ---
  inference-engine/include/ie_api_wrapper.h          | 146 ++++
- inference-engine/include/ie_common_wrapper.h       | 193 +++++
+ inference-engine/include/ie_common_wrapper.h       | 195 +++++
  inference-engine/src/CMakeLists.txt                |   1 +
  inference-engine/src/ie_c_wrapper/CMakeLists.txt   |  29 +
  inference-engine/src/ie_c_wrapper/README.md        |   1 +
  .../src/ie_c_wrapper/ie_api_wrapper.cpp            | 132 ++++
- inference-engine/src/ie_c_wrapper/ie_context.cpp   | 830 +++++++++++++++++++++
+ inference-engine/src/ie_c_wrapper/ie_context.cpp   | 834 +++++++++++++++++++++
  inference-engine/src/ie_c_wrapper/ie_context.h     | 265 +++++++
- 8 files changed, 1597 insertions(+)
+ 8 files changed, 1603 insertions(+)
  create mode 100644 inference-engine/include/ie_api_wrapper.h
  create mode 100644 inference-engine/include/ie_common_wrapper.h
  create mode 100644 inference-engine/src/ie_c_wrapper/CMakeLists.txt
@@ -175,10 +175,10 @@ index 0000000..65293b2
 +#endif
 diff --git a/inference-engine/include/ie_common_wrapper.h b/inference-engine/include/ie_common_wrapper.h
 new file mode 100644
-index 0000000..2e66815
+index 0000000..2acbbc1
 --- /dev/null
 +++ b/inference-engine/include/ie_common_wrapper.h
-@@ -0,0 +1,193 @@
+@@ -0,0 +1,195 @@
 + // Licensed under the Apache License, Version 2.0 (the "License");
 + // you may not use this file except in compliance with the License.
 + // You may obtain a copy of the License at
@@ -208,6 +208,8 @@ index 0000000..2e66815
 +    IE_GPU = 3,
 +    IE_FPGA = 4,
 +    IE_MYRIAD = 5,
++    IE_HDDL = 6,
++    IE_GNA = 7,
 +    IE_HETERO = 8
 +}IETargetDeviceType;
 +
@@ -566,10 +568,10 @@ index 0000000..f8c9b3c
 +#endif
 diff --git a/inference-engine/src/ie_c_wrapper/ie_context.cpp b/inference-engine/src/ie_c_wrapper/ie_context.cpp
 new file mode 100644
-index 0000000..4bd574d
+index 0000000..11910ef
 --- /dev/null
 +++ b/inference-engine/src/ie_c_wrapper/ie_context.cpp
-@@ -0,0 +1,830 @@
+@@ -0,0 +1,834 @@
 +// Copyright (c) 2018 Intel Corporation
 +//
 +// Licensed under the Apache License, Version 2.0 (the "License");
@@ -1036,6 +1038,10 @@ index 0000000..4bd574d
 +        return InferenceEngine::TargetDevice::eFPGA;
 +    case IE_MYRIAD:
 +        return InferenceEngine::TargetDevice::eMYRIAD;
++    case IE_HDDL:
++        return InferenceEngine::TargetDevice::eHDDL;
++    case IE_GNA:
++        return InferenceEngine::TargetDevice::eGNA;
 +    case IE_HETERO:
 +        return InferenceEngine::TargetDevice::eHETERO;
 +    default:
