@@ -1,0 +1,130 @@
+From 53b453ce188d2a130f5a8384323d530437c0ee71 Mon Sep 17 00:00:00 2001
+From: Lin Xie <lin.xie@intel.com>
+Date: Tue, 2 Apr 2019 14:24:00 +0800
+Subject: [PATCH] Change to match image with separate planes
+
+---
+ inference-engine/include/ie_common_wrapper.h     |  6 +--
+ inference-engine/src/ie_c_wrapper/ie_context.cpp | 60 +++++++++++++-----------
+ 2 files changed, 35 insertions(+), 31 deletions(-)
+
+diff --git a/inference-engine/include/ie_common_wrapper.h b/inference-engine/include/ie_common_wrapper.h
+index 2acbbc1..56c0615 100644
+--- a/inference-engine/include/ie_common_wrapper.h
++++ b/inference-engine/include/ie_common_wrapper.h
+@@ -157,12 +157,12 @@ typedef struct tagIEInputOutputInfo {
+ * @brief image input data for the inference engine supports
+ */
+ typedef struct tagIEData {
+-    void * buffer;
++#define NUM_DATA_POINTS 4
++    unsigned char *data[NUM_DATA_POINTS];  // pointers to picture planes
++    int        linesize[NUM_DATA_POINTS];  // size in bytes of each picture line
+     unsigned int size;  //byte size
+     unsigned int width;
+     unsigned int height;
+-    unsigned int widthStride;
+-    unsigned int heightStride;
+     unsigned int channelNum;
+     unsigned int batchIdx;
+     IEPrecisionType precision; //IE_FP32:IE_FP16:IE_U8
+diff --git a/inference-engine/src/ie_c_wrapper/ie_context.cpp b/inference-engine/src/ie_c_wrapper/ie_context.cpp
+index 11910ef..d7fc879 100644
+--- a/inference-engine/src/ie_c_wrapper/ie_context.cpp
++++ b/inference-engine/src/ie_c_wrapper/ie_context.cpp
+@@ -693,7 +693,7 @@ template <typename T> void CIEContext::imageU8ToBlob(const IEData * data, Blob::
+     const size_t height = blobSize[1];
+     const size_t channels = blobSize[2];
+     const size_t imageSize = width * height;
+-    unsigned char * buffer = (unsigned char *)data->buffer;
++    unsigned char * buffer = (unsigned char *)(data->data[0]);
+     T* blob_data = blob->buffer().as<T*>();
+     const float mean_val = 127.5f;
+     const float std_val = 0.0078125f;
+@@ -703,35 +703,20 @@ template <typename T> void CIEContext::imageU8ToBlob(const IEData * data, Blob::
+         return;
+     }
+ 
+-    int batchOffset = batchIndex * height* width * channels;
++    int batchOffset = batchIndex * height * width * channels;
+ 
+     if (IE_IMAGE_BGR_PLANAR == data->imageFormat) {
+-        // B G R planar input image
+-        /** Filling input tensor with images. First b channel, then g and r channels **/
+-        size_t imageStrideSize = data->heightStride * data->widthStride;
+-
+-        if (data->width == data->widthStride &&
+-            data->height == data->heightStride) {
+-            std::memcpy(blob_data + batchOffset, buffer, imageSize * channels);
+-        }
+-        else if (data->width == data->widthStride) {
+-            for (size_t ch = 0; ch < channels; ++ch) {
+-                std::memcpy(blob_data + batchOffset + ch * imageSize, buffer + ch * imageStrideSize, imageSize);
+-            }
+-        }
+-        else {
+-            /** Iterate over all pixel in image (b,g,r) **/
+-            for (size_t ch = 0; ch < channels; ++ch) {
+-                for (size_t h = 0; h < height; h++) {
+-                    std::memcpy(blob_data + batchOffset + ch * imageSize + h * width, buffer + ch * imageStrideSize + h * data->widthStride, width);
+-                }
+-            }
++        if (data->linesize[0] == width && data->linesize[1] == width && data->linesize[2] == width) {
++            for (size_t ch = 0; ch < channels; ch++)
++                std::memcpy(blob_data + batchOffset + ch * imageSize, data->data[ch], imageSize);
++        } else {
++            for (size_t ch = 0; ch < channels; ch++)
++                for (size_t h = 0; h < height; h++)
++                    std::memcpy(blob_data + batchOffset + ch * imageSize + h * width, data->data[ch] + h * data->linesize[ch], width);
+         }
+     }
+     else if (IE_IMAGE_BGR_PACKED == data->imageFormat) {
+-        // B G R packed input image
+-        size_t imageStrideSize = data->channelNum * data->widthStride;
+-
++        size_t imageStrideSize = data->linesize[0];
+         if (data->precision == IE_FP32) {
+             /** Iterate over all pixel in image (b,g,r) **/
+             for (size_t h = 0; h < height; h++)
+@@ -749,8 +734,27 @@ template <typename T> void CIEContext::imageU8ToBlob(const IEData * data, Blob::
+         }
+     }
+     else if (IE_IMAGE_RGB_PLANAR == data->imageFormat) {
+-        // R G B planar input image, switch the R and B plane. TBD
+-
++        /* B */
++        if (data->linesize[2] == width) {
++            std::memcpy(blob_data + batchOffset, data->data[2], imageSize);
++        } else {
++            for (size_t h = 0; h < height; h++)
++                std::memcpy(blob_data + batchOffset + h * width, data->data[2] + h * data->linesize[2], width);
++        }
++        /* G */
++        if (data->linesize[1] == width) {
++            std::memcpy(blob_data + batchOffset + imageSize, data->data[1], imageSize);
++        } else {
++            for (size_t h = 0; h < height; h++)
++                std::memcpy(blob_data + batchOffset + imageSize + h * width, data->data[1] + h * data->linesize[1], width);
++        }
++        /* R */
++        if (data->linesize[0] == width) {
++            std::memcpy(blob_data + batchOffset + 2 * imageSize, data->data[0], imageSize);
++        } else {
++            for (size_t h = 0; h < height; h++)
++                std::memcpy(blob_data + batchOffset + 2 * imageSize + h * width, data->data[0] + h * data->linesize[0], width);
++        }
+     }
+     else if (IE_IMAGE_RGB_PACKED == data->imageFormat) {
+         // R G B packed input image, wwitch the R and B packed value. TBD
+@@ -764,7 +768,7 @@ template <typename T> void CIEContext::imageU8ToBlob(const IEData * data, Blob::
+ template <typename T> void CIEContext::nonImageToBlob(const IEData * data, Blob::Ptr& blob, int batchIndex)
+ {
+     SizeVector blobSize = blob.get()->dims();
+-    T * buffer = (T *)data->buffer;
++    T * buffer = (T *)data->data[0];
+     T* blob_data = blob->buffer().as<T*>();
+ 
+     int batchOffset = batchIndex * data->size;
+-- 
+2.7.4
+
