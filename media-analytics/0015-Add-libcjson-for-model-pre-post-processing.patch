@@ -1,0 +1,47 @@
+From 5b86d5e682d90f95077e09fa1da08de26f46d364 Mon Sep 17 00:00:00 2001
+From: Lin Xie <lin.xie@intel.com>
+Date: Tue, 23 Apr 2019 14:56:16 +0800
+Subject: [PATCH] Add libcjson for model pre/post processing
+
+Change-Id: I394544f6530a548b3f838cabedba143fd6a604d4
+Signed-off-by: Lin Xie <lin.xie@intel.com>
+---
+ configure | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/configure b/configure
+index 05a481a..b8f9c4a 100755
+--- a/configure
++++ b/configure
+@@ -1648,6 +1648,7 @@ EXTERNAL_AUTODETECT_LIBRARY_LIST="
+     bzlib
+     coreimage
+     iconv
++    libcjson
+     libxcb
+     libxcb_shm
+     libxcb_shape
+@@ -3411,9 +3412,9 @@ fspp_filter_deps="gpl"
+ geq_filter_deps="gpl"
+ histeq_filter_deps="gpl"
+ hqdn3d_filter_deps="gpl"
+-inference_classify_filter_deps="libinference_engine"
++inference_classify_filter_deps="libinference_engine libcjson"
+ inference_classify_filter_select="dnn"
+-inference_detect_filter_deps="libinference_engine"
++inference_detect_filter_deps="libinference_engine libcjson"
+ inference_detect_filter_select="dnn"
+ interlace_filter_deps="gpl"
+ kerndeint_filter_deps="gpl"
+@@ -6255,6 +6256,8 @@ enabled libinference_engine &&
+ 
+ enabled librdkafka  && require_pkg_config librdkafka rdkafka "librdkafka/rdkafka.h" rd_kafka_version
+ 
++enabled libcjson && check_pkg_config libcjson "libcjson >= 1.7.10" cjson/cJSON.h cJSON_Version || disable libcjson
++
+ if enabled gcrypt; then
+     GCRYPT_CONFIG="${cross_prefix}libgcrypt-config"
+     if "${GCRYPT_CONFIG}" --version > /dev/null 2>&1; then
+-- 
+2.7.4
+

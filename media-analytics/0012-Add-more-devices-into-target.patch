@@ -1,0 +1,58 @@
+From f4ebaf81f3fb10e1aed8fdf8f80bcadd8abf9017 Mon Sep 17 00:00:00 2001
+From: Lin Xie <lin.xie@intel.com>
+Date: Tue, 26 Mar 2019 16:58:06 +0800
+Subject: [PATCH] Add more devices into target
+
+Change-Id: I6ff67803fe0b28ac9df4b1194d1708070ea0e549
+---
+ libavfilter/dnn_backend_intel_ie.c | 8 ++++----
+ libavfilter/dnn_data.h             | 6 ++----
+ 2 files changed, 6 insertions(+), 8 deletions(-)
+
+diff --git a/libavfilter/dnn_backend_intel_ie.c b/libavfilter/dnn_backend_intel_ie.c
+index 76746c8..5742a8e 100644
+--- a/libavfilter/dnn_backend_intel_ie.c
++++ b/libavfilter/dnn_backend_intel_ie.c
+@@ -41,17 +41,17 @@ static IETargetDeviceType get_device_type_id(DNNTargetDeviceType device_type) {
+     case DNN_TARGET_DEVICE_BALANCED:
+         return IE_Balanced;
+     case DNN_TARGET_DEVICE_CPU:
+-    case DNN_TARGET_DEVICE_CPU_FP16:
+         return IE_CPU;
+     case DNN_TARGET_DEVICE_GPU:
+-    case DNN_TARGET_DEVICE_GPU_FP16:
+         return IE_GPU;
+     case DNN_TARGET_DEVICE_FPGA:
+-    case DNN_TARGET_DEVICE_FPGA_FP16:
+         return IE_FPGA;
+     case DNN_TARGET_DEVICE_MYRIAD:
+-    case DNN_TARGET_DEVICE_MYRIAD_FP16:
+         return IE_MYRIAD;
++    case DNN_TARGET_DEVICE_HDDL:
++        return IE_HDDL;
++    case DNN_TARGET_DEVICE_GNA:
++        return IE_GNA;
+     case DNN_TARGET_DEVICE_HETERO:
+         return IE_HETERO;
+     default:
+diff --git a/libavfilter/dnn_data.h b/libavfilter/dnn_data.h
+index 97ec675..8c70366 100644
+--- a/libavfilter/dnn_data.h
++++ b/libavfilter/dnn_data.h
+@@ -31,11 +31,9 @@ typedef enum DNNTargetDeviceType {
+     DNN_TARGET_DEVICE_GPU = 3,
+     DNN_TARGET_DEVICE_FPGA = 4,
+     DNN_TARGET_DEVICE_MYRIAD = 5,
++    DNN_TARGET_DEVICE_HDDL = 6,
++    DNN_TARGET_DEVICE_GNA  = 7,
+     DNN_TARGET_DEVICE_HETERO = 8,
+-    DNN_TARGET_DEVICE_CPU_FP16 = 9,
+-    DNN_TARGET_DEVICE_GPU_FP16 = 10,
+-    DNN_TARGET_DEVICE_FPGA_FP16 = 11,
+-    DNN_TARGET_DEVICE_MYRIAD_FP16 = 12,
+ } DNNTargetDeviceType;
+ 
+ /**
+-- 
+2.7.4
+
