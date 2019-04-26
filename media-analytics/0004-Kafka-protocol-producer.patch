@@ -1,4 +1,4 @@
-From d731a9c0104b4947677e7a4d245953c85e240795 Mon Sep 17 00:00:00 2001
+From 84c18848e7d6d36ab2e3a25c1756681d87e0f9db Mon Sep 17 00:00:00 2001
 From: "Wang, Shaofei" <shaofei.wang@intel.com>
 Date: Fri, 1 Feb 2019 18:09:25 -0500
 Subject: [PATCH] Kafka protocol producer with librdkafka library format:
@@ -14,7 +14,7 @@ Change-Id: Ia342a2419c009d6f9c1a6b13f7c5a7037eddc828
  create mode 100644 libavformat/kafkaproto.c
 
 diff --git a/configure b/configure
-index 08bdcce..dfe7262 100755
+index fb87f47..05a481a 100755
 --- a/configure
 +++ b/configure
 @@ -263,6 +263,7 @@ External library support:
@@ -41,7 +41,7 @@ index 08bdcce..dfe7262 100755
  
  # filters
  afftdn_filter_deps="avcodec"
-@@ -6248,6 +6251,8 @@ enabled vapoursynth       && require_pkg_config vapoursynth "vapoursynth-script
+@@ -6250,6 +6253,8 @@ enabled vapoursynth       && require_pkg_config vapoursynth "vapoursynth-script
  enabled libinference_engine &&
      require_pkg_config libinference_engine dldt "ie_api_wrapper.h" IESizeOfContext
  
