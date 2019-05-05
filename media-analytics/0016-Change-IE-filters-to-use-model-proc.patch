@@ -1,4 +1,4 @@
-From 1012e66cc72619538ef6bade30a76c4aed2bf6e7 Mon Sep 17 00:00:00 2001
+From ca12fa90c7eef79992dffc1dcc6edfec5e94b673 Mon Sep 17 00:00:00 2001
 From: Lin Xie <lin.xie@intel.com>
 Date: Tue, 23 Apr 2019 15:41:30 +0800
 Subject: [PATCH] Change IE filters to use model proc
@@ -17,11 +17,11 @@ Signed-off-by: Lin Xie <lin.xie@intel.com>
 ---
  libavfilter/dnn_backend_intel_ie.c  |  76 +++-----
  libavfilter/dnn_data.h              |  12 +-
- libavfilter/inference.c             | 301 ++++++++++++++++++++++++++++++--
- libavfilter/inference.h             |  47 ++++-
+ libavfilter/inference.c             | 304 ++++++++++++++++++++++++++++++--
+ libavfilter/inference.h             |  49 +++++-
  libavfilter/vf_inference_classify.c | 337 +++++++++++++++++++++++++++---------
  libavfilter/vf_inference_detect.c   | 107 +++++-------
- 6 files changed, 654 insertions(+), 226 deletions(-)
+ 6 files changed, 659 insertions(+), 226 deletions(-)
 
 diff --git a/libavfilter/dnn_backend_intel_ie.c b/libavfilter/dnn_backend_intel_ie.c
 index a600ee6..561cc15 100644
@@ -178,19 +178,21 @@ index 0add8ee..7b7f4a5 100644
  
  /**
 diff --git a/libavfilter/inference.c b/libavfilter/inference.c
-index 596c5b4..b2969df 100644
+index 596c5b4..380a5ed 100644
 --- a/libavfilter/inference.c
 +++ b/libavfilter/inference.c
-@@ -33,6 +33,8 @@
+@@ -33,6 +33,10 @@
  
  #include "inference.h"
  
++#if CONFIG_LIBCJSON
 +#include <cjson/cJSON.h>
++#endif
 +
  #if CONFIG_VAAPI
  #define VA_CALL(_FUNC)                                     \
      {                                                      \
-@@ -46,7 +48,7 @@
+@@ -46,7 +50,7 @@
      }
  #endif
  
@@ -199,7 +201,7 @@ index 596c5b4..b2969df 100644
  {
      char *infer_type;
      int   batch_size;
-@@ -68,6 +70,50 @@ static int va_vpp_crop_and_scale(VAAPIVpp *va_vpp, AVFrame *input, Rect *crop_re
+@@ -68,6 +72,50 @@ static int va_vpp_crop_and_scale(VAAPIVpp *va_vpp, AVFrame *input, Rect *crop_re
  static int va_vpp_scale(VAAPIVpp *va_vpp, AVFrame *input,
          int scale_w, int scale_h, uint8_t *data[],  int stride[]);
  
@@ -250,7 +252,7 @@ index 596c5b4..b2969df 100644
  static int fill_dnn_data_from_frame(DNNIOData *data,
                                      const AVFrame *frame,
                                      int batch_idx,
-@@ -314,7 +360,7 @@ int ff_inference_base_create(AVFilterContext *ctx,
+@@ -314,7 +362,7 @@ int ff_inference_base_create(AVFilterContext *ctx,
      DNN_ERR_CHECK(ctx);
  
      info = &s->input_info;
@@ -259,7 +261,7 @@ index 596c5b4..b2969df 100644
          info->layout[i]    = param->input_layout;
          info->precision[i] = param->input_precision;
          info->is_image[i]  = param->input_is_image;
-@@ -387,7 +433,6 @@ int ff_inference_base_submit_frame(InferenceBaseContext *base,
+@@ -387,7 +435,6 @@ int ff_inference_base_submit_frame(InferenceBaseContext *base,
      DNNIOData input = { };
      fill_dnn_data_from_frame(&input, frame, batch_idx, 1, input_idx);
      base->model->set_input(base->model->model, &input);
@@ -267,7 +269,7 @@ index 596c5b4..b2969df 100644
  #if CONFIG_VAAPI
      if (base->vpp.va_vpp)
          va_vpp_surface_release(base->vpp.va_vpp);
-@@ -410,7 +455,7 @@ int ff_inference_base_filter_frame(InferenceBaseContext *base, AVFrame *in)
+@@ -410,7 +457,7 @@ int ff_inference_base_filter_frame(InferenceBaseContext *base, AVFrame *in)
      DNNReturnType dnn_ret;
      DNNIOData input = { };
  
@@ -276,7 +278,7 @@ index 596c5b4..b2969df 100644
          AVFrame *processed_frame;
          for (int j = 0; j < base->batch_size; j++) {
              if (base->preprocess) {
-@@ -433,7 +478,7 @@ int ff_inference_base_filter_frame(InferenceBaseContext *base, AVFrame *in)
+@@ -433,7 +480,7 @@ int ff_inference_base_filter_frame(InferenceBaseContext *base, AVFrame *in)
  }
  
  int ff_inference_base_get_infer_result(InferenceBaseContext *base,
@@ -285,7 +287,7 @@ index 596c5b4..b2969df 100644
                                         InferTensorMeta *metadata)
  {
      DNNModelInfo *info = &base->output_info;
-@@ -443,18 +488,17 @@ int ff_inference_base_get_infer_result(InferenceBaseContext *base,
+@@ -443,18 +490,17 @@ int ff_inference_base_get_infer_result(InferenceBaseContext *base,
      av_assert0(metadata != NULL);
  
      // TODO: change to layer name for multiple outputs
@@ -311,7 +313,7 @@ index 596c5b4..b2969df 100644
  
      metadata->data        = data.data[0];
      metadata->total_bytes = data.size;
-@@ -477,11 +521,23 @@ VideoPP* ff_inference_base_get_vpp(InferenceBaseContext *base)
+@@ -477,11 +523,23 @@ VideoPP* ff_inference_base_get_vpp(InferenceBaseContext *base)
      return &base->vpp;
  }
  
@@ -340,11 +342,12 @@ index 596c5b4..b2969df 100644
  #if CONFIG_VAAPI
  static int ff_vaapi_vpp_colour_standard(enum AVColorSpace av_cs)
  {
-@@ -733,3 +789,212 @@ static int va_vpp_crop_and_scale(VAAPIVpp *va_vpp,
+@@ -733,3 +791,213 @@ static int va_vpp_crop_and_scale(VAAPIVpp *va_vpp,
      return VA_STATUS_SUCCESS;
  }
  #endif
 +
++#if CONFIG_LIBCJSON
 +/*
 + * model proc parsing functions using cJSON
 + */
@@ -552,9 +555,9 @@ index 596c5b4..b2969df 100644
 +
 +    cJSON_Delete((cJSON *)json);
 +}
-+
++#endif
 diff --git a/libavfilter/inference.h b/libavfilter/inference.h
-index d0515e2..3f6919d 100644
+index d0515e2..0512403 100644
 --- a/libavfilter/inference.h
 +++ b/libavfilter/inference.h
 @@ -32,10 +32,15 @@
@@ -622,12 +625,13 @@ index d0515e2..3f6919d 100644
  #if CONFIG_VAAPI
  int va_vpp_device_create(VAAPIVpp *ctx, AVFilterLink *inlink);
  
-@@ -217,4 +246,16 @@ int va_vpp_surface_alloc(VAAPIVpp *ctx, size_t width, size_t height, const char
+@@ -217,4 +246,18 @@ int va_vpp_surface_alloc(VAAPIVpp *ctx, size_t width, size_t height, const char
  int va_vpp_surface_release(VAAPIVpp *ctx);
  #endif
  
 +int ff_get_file_size(FILE *fp);
 +
++#if CONFIG_LIBCJSON
 +void *ff_read_model_proc(const char *path);
 +
 +void ff_load_default_model_proc(ModelInputPreproc *preproc, ModelOutputPostproc *postproc);
@@ -637,6 +641,7 @@ index d0515e2..3f6919d 100644
 +int ff_parse_output_postproc(const void *json, ModelOutputPostproc *m_postproc);
 +
 +void ff_release_model_proc(const void *json, ModelInputPreproc *preproc, ModelOutputPostproc *postproc);
++#endif
 +
  #endif
 diff --git a/libavfilter/vf_inference_classify.c b/libavfilter/vf_inference_classify.c
