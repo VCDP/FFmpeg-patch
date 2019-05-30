@@ -1,13 +1,16 @@
-From e95bc83a52d3b679fb281dbc8792f911a5b67882 Mon Sep 17 00:00:00 2001
+From 4090fff9ddac006943dd0846c9d93cc0b02c1260 Mon Sep 17 00:00:00 2001
 From: Lin Xie <lin.xie@intel.com>
 Date: Mon, 6 May 2019 11:24:53 +0800
 Subject: [PATCH] Fix code style and symbols visibility for 2019R1
 
+* append minor change for dldt 2019r1.1
 ---
  inference-engine/include/ie_api_wrapper.h        | 24 +++++++-------------
  inference-engine/include/ie_common_wrapper.h     | 29 +++++++++---------------
  inference-engine/src/ie_c_wrapper/CMakeLists.txt |  6 +++--
- 3 files changed, 23 insertions(+), 36 deletions(-)
+ inference-engine/src/ie_c_wrapper/ie_context.cpp | 27 +---------------------
+ inference-engine/src/ie_c_wrapper/ie_context.h   |  5 ----
+ 5 files changed, 24 insertions(+), 67 deletions(-)
 
 diff --git a/inference-engine/include/ie_api_wrapper.h b/inference-engine/include/ie_api_wrapper.h
 index 5284b5f..9c178f5 100644
@@ -135,6 +138,67 @@ index 063f923..8e91e70 100644
  endif()
  
  add_library(${TARGET_NAME} SHARED ${SOURCES} ${HEADERS})
+diff --git a/inference-engine/src/ie_c_wrapper/ie_context.cpp b/inference-engine/src/ie_c_wrapper/ie_context.cpp
+index 0dca077..ba75cba 100644
+--- a/inference-engine/src/ie_c_wrapper/ie_context.cpp
++++ b/inference-engine/src/ie_c_wrapper/ie_context.cpp
+@@ -53,7 +53,7 @@ void CIEContext::loadModel(IEConfig * config)
+         path.assign(config->pluginPath);
+ 
+     InferenceEngine::PluginDispatcher dispatcher({ path, "../../../lib/intel64", "" });
+-    targetDevice = getDeviceFromId(config->targetId);
++    targetDevice = (InferenceEngine::TargetDevice)config->targetId;
+     /** Loading plugin for device **/
+     plugin = dispatcher.getPluginByDevice(getDeviceName(targetDevice));
+     enginePtr = plugin;
+@@ -431,31 +431,6 @@ InferenceEngine::TargetDevice CIEContext::getDeviceFromString(const std::string
+     return InferenceEngine::TargetDeviceInfo::fromStr(deviceName);
+ }
+ 
+-InferenceEngine::TargetDevice CIEContext::getDeviceFromId(IETargetDeviceType device) {
+-    switch (device) {
+-    case IE_Default:
+-        return InferenceEngine::TargetDevice::eDefault;
+-    case IE_Balanced:
+-        return InferenceEngine::TargetDevice::eBalanced;
+-    case IE_CPU:
+-        return InferenceEngine::TargetDevice::eCPU;
+-    case IE_GPU:
+-        return InferenceEngine::TargetDevice::eGPU;
+-    case IE_FPGA:
+-        return InferenceEngine::TargetDevice::eFPGA;
+-    case IE_MYRIAD:
+-        return InferenceEngine::TargetDevice::eMYRIAD;
+-    case IE_HDDL:
+-        return InferenceEngine::TargetDevice::eHDDL;
+-    case IE_GNA:
+-        return InferenceEngine::TargetDevice::eGNA;
+-    case IE_HETERO:
+-        return InferenceEngine::TargetDevice::eHETERO;
+-    default:
+-        return InferenceEngine::TargetDevice::eCPU;
+-    }
+-}
+-
+ InferenceEngine::Layout CIEContext::estimateLayout(const int chNum)
+ {
+     if (chNum == 4)
+diff --git a/inference-engine/src/ie_c_wrapper/ie_context.h b/inference-engine/src/ie_c_wrapper/ie_context.h
+index 45cdbb6..6f52ab5 100644
+--- a/inference-engine/src/ie_c_wrapper/ie_context.h
++++ b/inference-engine/src/ie_c_wrapper/ie_context.h
+@@ -178,11 +178,6 @@ protected:
+     InferenceEngine::TargetDevice getDeviceFromString(const std::string &deviceName);
+ 
+     /*
+-    * @brief Converts enum value to TargetDevice
+-    */
+-    InferenceEngine::TargetDevice getDeviceFromId(IETargetDeviceType device);
+-
+-    /*
+     * @brief estimate the data layout according to the channel number
+     */
+     InferenceEngine::Layout estimateLayout(const int chNum);
 -- 
 2.7.4
 
