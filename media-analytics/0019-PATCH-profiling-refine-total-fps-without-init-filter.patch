@@ -1,0 +1,278 @@
+From 37337ea6d663a1e01610af26444a4a68c0903cc5 Mon Sep 17 00:00:00 2001
+From: "Wang, Shaofei" <shaofei.wang@intel.com>
+Date: Thu, 23 May 2019 06:43:14 -0400
+Subject: [PATCH 9/9] [PATCH] [profiling] refine, total fps without
+ init(filter) and add  decode/encode profiling  for decode, only sw profiling
+ are supported now.
+
+Signed-off-by: Wang, Shaofei <shaofei.wang@intel.com>
+Signed-off-by: Hu, Yuan <yuan1.hu@intel.com>
+
+Change-Id: Ie3ce4c87a3aab22993d3dec1d4ccd8e79e1447a6
+---
+ fftools/ffmpeg.c           | 63 ++++++++++++++++++++++++++++++++++++++++++++--
+ libavcodec/avcodec.h       |  2 ++
+ libavcodec/decode.c        |  5 ++++
+ libavcodec/encode.c        |  6 +++++
+ libavcodec/pthread_frame.c | 13 ++++++++++
+ libavcodec/utils.c         |  1 +
+ libavfilter/avfilter.c     | 15 -----------
+ 7 files changed, 88 insertions(+), 17 deletions(-)
+
+diff --git a/fftools/ffmpeg.c b/fftools/ffmpeg.c
+index 9d5f148..9d600c6 100644
+--- a/fftools/ffmpeg.c
++++ b/fftools/ffmpeg.c
+@@ -1766,6 +1766,7 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
+     double speed;
+     int64_t pts = INT64_MIN + 1;
+     static int64_t last_time = -1;
++    static int64_t init_time = 0;
+     static int qp_histogram[52];
+     int hours, mins, secs, us;
+     const char *hours_sign;
+@@ -1787,6 +1788,18 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
+ 
+     t = (cur_time-timer_start) / 1000000.0;
+ 
++    if (init_time == 0 && do_profiling_all) {
++        for (i = 0; i < nb_filtergraphs; i++) {
++            FilterGraph *fg = filtergraphs[i];
++            int j;
++            for (j = 0; j < fg->graph->nb_filters; j++) {
++                AVFilterContext *ft = fg->graph->filters[j];
++                if (!ft)
++                    continue;
++                init_time += ft->init_working_time;
++            }
++        }
++    }
+ 
+     oc = output_files[0]->ctx;
+ 
+@@ -1877,8 +1890,12 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
+         }
+         float total_fps;
+         total_fps = t > 1 ? total_frames_num / t : 0;
+-        av_bprintf(&buf, "profiling | total frame=%d ", total_frames_num);
+-        av_bprintf(&buf, "fps=%.2f ", total_fps);
++        av_bprintf(&buf, "| profiling | total frame=%d ", total_frames_num);
++        av_bprintf(&buf, "fps=%.2f |", total_fps);
++        if (init_time > 1000000) {
++            total_fps = t > 1 ? total_frames_num / (t - init_time / 1000000.0 ): 0;
++            av_bprintf(&buf, ", fps without filter init=%.2f |", total_fps);
++        }
+     }
+ 
+     secs = FFABS(pts) / AV_TIME_BASE;
+@@ -4964,6 +4981,13 @@ static int transcode(void)
+     for (i = 0; i < nb_output_streams; i++) {
+         ost = output_streams[i];
+         if (ost->encoding_needed) {
++            if (do_profiling_all) {
++                if (ost->enc_ctx->frame_number > 1 && ost->enc_ctx->sum_working_time > 1) {
++                    double fps = (double)(ost->enc_ctx->frame_number * 1000000) / ost->enc_ctx->sum_working_time;
++                    printf("| encode profiling | name=%s, frame=%d, fps=%.2f\n",
++                        ost->enc_ctx->codec->name, ost->enc_ctx->frame_number, fps);
++                }
++            }
+             av_freep(&ost->enc_ctx->stats_in);
+         }
+         total_packets_written += ost->packets_written;
+@@ -4978,12 +5002,47 @@ static int transcode(void)
+     for (i = 0; i < nb_input_streams; i++) {
+         ist = input_streams[i];
+         if (ist->decoding_needed) {
++            if (do_profiling_all && !ist->dec_ctx->hwaccel) {
++                if (ist->dec_ctx->frame_number > 1 && ist->dec_ctx->sum_working_time > 1) {
++                    double fps = (double)(ist->dec_ctx->frame_number * 1000000) / ist->dec_ctx->sum_working_time;
++                    printf("| sw decode profiling | name=%s, frame=%d, fps=%.2f\n",
++                        ist->dec_ctx->codec->name, ist->dec_ctx->frame_number, fps);
++                }
++            }
+             avcodec_close(ist->dec_ctx);
+             if (ist->hwaccel_uninit)
+                 ist->hwaccel_uninit(ist->dec_ctx);
+         }
+     }
+ 
++    if (do_profiling_all) { //for filters
++        for (i = 0; i < nb_filtergraphs; i++) {
++            FilterGraph *fg = filtergraphs[i];
++            int j;
++            for (j = 0; j < fg->graph->nb_filters; j++) {
++                AVFilterContext *ft = fg->graph->filters[j];
++                int64_t frame_cnt = 0;
++                int k;
++
++                if (!ft)
++                    continue;
++                for (k = 0; k < ft->nb_outputs; k++) {
++                    if (ft->outputs[k])
++                        frame_cnt += ft->outputs[k]->frame_count_out;
++                }
++                if (frame_cnt == 0)
++                    continue;
++                if (ft->sum_working_time > 1) {
++                    double fps = (double)(frame_cnt * 1000000) / ft->sum_working_time;
++                    if (fps < 10000) { //some filter delivered too big fps is not we focused
++                        printf("| filter profiling | name=%s, init=%.2f ms, frame=%d, fps=%.2f\n",
++                                ft->filter->name, (double)ft->init_working_time / 1000, frame_cnt, fps);
++                    }
++                }
++            }
++        }
++    }
++
+     av_buffer_unref(&hw_device_ctx);
+     hw_device_free_all();
+ 
+diff --git a/libavcodec/avcodec.h b/libavcodec/avcodec.h
+index 84ccd8d..6d3ab2e 100644
+--- a/libavcodec/avcodec.h
++++ b/libavcodec/avcodec.h
+@@ -3339,6 +3339,8 @@ typedef struct AVCodecContext {
+      * used as reference pictures).
+      */
+     int extra_hw_frames;
++
++    unsigned long long int last_tm, sum_working_time;
+ } AVCodecContext;
+ 
+ #if FF_API_CODEC_GET_SET
+diff --git a/libavcodec/decode.c b/libavcodec/decode.c
+index b18ad02..4ded2f6 100644
+--- a/libavcodec/decode.c
++++ b/libavcodec/decode.c
+@@ -399,6 +399,7 @@ static int64_t guess_correct_pts(AVCodecContext *ctx,
+  * returning any output, so this function needs to be called in a loop until it
+  * returns EAGAIN.
+  **/
++  #include "libavutil/time.h"
+ static int decode_simple_internal(AVCodecContext *avctx, AVFrame *frame)
+ {
+     AVCodecInternal   *avci = avctx->internal;
+@@ -430,7 +431,11 @@ static int decode_simple_internal(AVCodecContext *avctx, AVFrame *frame)
+     if (HAVE_THREADS && avctx->active_thread_type & FF_THREAD_FRAME) {
+         ret = ff_thread_decode_frame(avctx, frame, &got_frame, pkt);
+     } else {
++        if (av_profiling_get())
++            avctx->last_tm = av_gettime();
+         ret = avctx->codec->decode(avctx, frame, &got_frame, pkt);
++        if (av_profiling_get())
++            avctx->sum_working_time += av_gettime() - avctx->last_tm;
+ 
+         if (!(avctx->codec->caps_internal & FF_CODEC_CAP_SETS_PKT_DTS))
+             frame->pkt_dts = pkt->dts;
+diff --git a/libavcodec/encode.c b/libavcodec/encode.c
+index d12c425..0f71426 100644
+--- a/libavcodec/encode.c
++++ b/libavcodec/encode.c
+@@ -28,6 +28,7 @@
+ #include "avcodec.h"
+ #include "frame_thread_encoder.h"
+ #include "internal.h"
++#include "libavutil/time.h"
+ 
+ int ff_alloc_packet2(AVCodecContext *avctx, AVPacket *avpkt, int64_t size, int64_t min_size)
+ {
+@@ -293,7 +294,12 @@ int attribute_align_arg avcodec_encode_video2(AVCodecContext *avctx,
+ 
+     av_assert0(avctx->codec->encode2);
+ 
++    if (av_profiling_get())
++        avctx->last_tm = av_gettime();
+     ret = avctx->codec->encode2(avctx, avpkt, frame, got_packet_ptr);
++    if (av_profiling_get())
++        avctx->sum_working_time += av_gettime() - avctx->last_tm;
++
+     av_assert0(ret <= 0);
+ 
+     emms_c();
+diff --git a/libavcodec/pthread_frame.c b/libavcodec/pthread_frame.c
+index 36ac0ac..caa49f6 100644
+--- a/libavcodec/pthread_frame.c
++++ b/libavcodec/pthread_frame.c
+@@ -44,6 +44,7 @@
+ #include "libavutil/mem.h"
+ #include "libavutil/opt.h"
+ #include "libavutil/thread.h"
++#include "libavutil/time.h"
+ 
+ enum {
+     ///< Set when the thread is awaiting a packet.
+@@ -198,7 +199,11 @@ static attribute_align_arg void *frame_worker_thread(void *arg)
+ 
+         av_frame_unref(p->frame);
+         p->got_frame = 0;
++        if (av_profiling_get())
++            avctx->last_tm = av_gettime();
+         p->result = codec->decode(avctx, p->frame, &p->got_frame, &p->avpkt);
++        if (av_profiling_get() && !avctx->hwaccel)
++            avctx->sum_working_time += av_gettime() - avctx->last_tm;
+ 
+         if ((p->result < 0 || !p->got_frame) && p->frame->buf[0]) {
+             if (avctx->internal->allocate_progress)
+@@ -283,6 +288,10 @@ static int update_context_from_thread(AVCodecContext *dst, AVCodecContext *src,
+         dst->sample_fmt     = src->sample_fmt;
+         dst->channel_layout = src->channel_layout;
+         dst->internal->hwaccel_priv_data = src->internal->hwaccel_priv_data;
++        if (av_profiling_get()) {
++            dst->last_tm = src->last_tm;
++            dst->sum_working_time = src->sum_working_time;
++        }
+ 
+         if (!!dst->hw_frames_ctx != !!src->hw_frames_ctx ||
+             (dst->hw_frames_ctx && dst->hw_frames_ctx->data != src->hw_frames_ctx->data)) {
+@@ -340,6 +349,10 @@ static int update_context_from_user(AVCodecContext *dst, AVCodecContext *src)
+     dst->frame_number     = src->frame_number;
+     dst->reordered_opaque = src->reordered_opaque;
+     dst->thread_safe_callbacks = src->thread_safe_callbacks;
++    if (av_profiling_get()) {
++        dst->last_tm = src->last_tm;
++        dst->sum_working_time = src->sum_working_time;
++    }
+ 
+     if (src->slice_count && src->slice_offset) {
+         if (dst->slice_count < src->slice_count) {
+diff --git a/libavcodec/utils.c b/libavcodec/utils.c
+index 1661d48..8b6d6e4 100644
+--- a/libavcodec/utils.c
++++ b/libavcodec/utils.c
+@@ -692,6 +692,7 @@ int attribute_align_arg avcodec_open2(AVCodecContext *avctx, const AVCodec *code
+         goto free_and_end;
+     }
+     avctx->frame_number = 0;
++    avctx->sum_working_time = 0;
+     avctx->codec_descriptor = avcodec_descriptor_get(avctx->codec_id);
+ 
+     if ((avctx->codec->capabilities & AV_CODEC_CAP_EXPERIMENTAL) &&
+diff --git a/libavfilter/avfilter.c b/libavfilter/avfilter.c
+index 0c5c2b6..f6e5cfb 100644
+--- a/libavfilter/avfilter.c
++++ b/libavfilter/avfilter.c
+@@ -766,21 +766,6 @@ void avfilter_free(AVFilterContext *filter)
+     if (!filter)
+         return;
+ 
+-    if (av_profiling_get()) {
+-        for (i = 0; i < filter->nb_outputs; i++) {
+-            if (filter && filter->outputs[i])
+-                frame_cnt += filter->outputs[i]->frame_count_out;
+-        }
+-        if (frame_cnt == 0)
+-            frame_cnt = 1;
+-        if (frame_cnt > 1 && filter->sum_working_time > 1) {
+-            double fps = (double)(frame_cnt * 1000000) / filter->sum_working_time;
+-            if (fps < 5000) { //some filter delivered too big fps is not we focused
+-                printf("filter profiling | name=%s, init=%.2f ms, frame=%d, fps=%.2f\n",
+-                        filter->filter->name, (double)filter->init_working_time / 1000, frame_cnt, fps);
+-            }
+-        }
+-    }
+     if (filter->graph)
+         ff_filter_graph_remove_filter(filter->graph, filter);
+ 
+-- 
+1.8.3.1
+

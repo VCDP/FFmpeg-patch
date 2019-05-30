@@ -1,0 +1,182 @@
+From 3ad5a7d11d1e739ac37c07682f21e3f34e429a6a Mon Sep 17 00:00:00 2001
+From: "Wang, Shaofei" <shaofei.wang@intel.com>
+Date: Mon, 13 May 2019 00:45:14 -0400
+Subject: [PATCH 4/9] [profiling] enable it just by cmd option, set to av parm
+ removed --enable-profiling, and code refine
+
+Change-Id: I6ef06fd33313507667143b835f365fd617b9268d
+---
+ configure              |  1 -
+ fftools/ffmpeg.c       |  2 +-
+ fftools/ffmpeg_opt.c   |  4 ++++
+ libavfilter/avfilter.c | 39 +++++++++++++++++++--------------------
+ libavfilter/avfilter.h |  2 --
+ libavutil/log.c        | 11 +++++++++++
+ libavutil/log.h        |  3 +++
+ 7 files changed, 38 insertions(+), 24 deletions(-)
+
+diff --git a/configure b/configure
+index 3c45e8d..c5dafb8 100755
+--- a/configure
++++ b/configure
+@@ -1825,7 +1825,6 @@ FEATURE_LIST="
+     small
+     static
+     swscale_alpha
+-    profiling
+ "
+ 
+ # this list should be kept in linking order
+diff --git a/fftools/ffmpeg.c b/fftools/ffmpeg.c
+index e2981c7..9d5f148 100644
+--- a/fftools/ffmpeg.c
++++ b/fftools/ffmpeg.c
+@@ -1877,7 +1877,7 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
+         }
+         float total_fps;
+         total_fps = t > 1 ? total_frames_num / t : 0;
+-        av_bprintf(&buf, "total frame=%d ", total_frames_num);
++        av_bprintf(&buf, "profiling | total frame=%d ", total_frames_num);
+         av_bprintf(&buf, "fps=%.2f ", total_fps);
+     }
+ 
+diff --git a/fftools/ffmpeg_opt.c b/fftools/ffmpeg_opt.c
+index 21e47f2..bf71423 100644
+--- a/fftools/ffmpeg_opt.c
++++ b/fftools/ffmpeg_opt.c
+@@ -3296,6 +3296,10 @@ int ffmpeg_parse_options(int argc, char **argv)
+ 
+     check_filter_outputs();
+ 
++    if (do_profiling_all) {
++        av_profiling_set(do_profiling_all);
++    }
++
+ fail:
+     uninit_parse_context(&octx);
+     if (ret < 0) {
+diff --git a/libavfilter/avfilter.c b/libavfilter/avfilter.c
+index b6452c4..0c5c2b6 100644
+--- a/libavfilter/avfilter.c
++++ b/libavfilter/avfilter.c
+@@ -766,22 +766,21 @@ void avfilter_free(AVFilterContext *filter)
+     if (!filter)
+         return;
+ 
+-#if CONFIG_PROFILING
+-    for (i = 0; i < filter->nb_outputs; i++) {
+-        if (filter && filter->outputs[i])
+-            frame_cnt += filter->outputs[i]->frame_count_out;
+-    }
+-    if (frame_cnt == 0)
+-        frame_cnt = 1;
+-    if (frame_cnt > 1 && filter->sum_working_time > 1) {
+-        double fps = (double)(frame_cnt * 1000000) / filter->sum_working_time;
+-        if (fps < 5000) { //some filter delivered too big fps is not we focused
+-            printf("#profiling: filter: %s, frame: %d, fps: %.2f\n",
+-                    filter->filter->name, frame_cnt, fps);
+-            printf("            init: %.2f ms\n", (double)filter->init_working_time / 1000);
++    if (av_profiling_get()) {
++        for (i = 0; i < filter->nb_outputs; i++) {
++            if (filter && filter->outputs[i])
++                frame_cnt += filter->outputs[i]->frame_count_out;
++        }
++        if (frame_cnt == 0)
++            frame_cnt = 1;
++        if (frame_cnt > 1 && filter->sum_working_time > 1) {
++            double fps = (double)(frame_cnt * 1000000) / filter->sum_working_time;
++            if (fps < 5000) { //some filter delivered too big fps is not we focused
++                printf("filter profiling | name=%s, init=%.2f ms, frame=%d, fps=%.2f\n",
++                        filter->filter->name, (double)filter->init_working_time / 1000, frame_cnt, fps);
++            }
+         }
+     }
+-#endif
+     if (filter->graph)
+         ff_filter_graph_remove_filter(filter->graph, filter);
+ 
+@@ -1449,18 +1448,18 @@ int ff_filter_activate(AVFilterContext *filter)
+ {
+     int ret;
+ 
+-#if CONFIG_PROFILING
+-    filter->last_tm = av_gettime();
+-#endif
++    if (av_profiling_get())
++        filter->last_tm = av_gettime();
++
+     /* Generic timeline support is not yet implemented but should be easy */
+     av_assert1(!(filter->filter->flags & AVFILTER_FLAG_SUPPORT_TIMELINE_GENERIC &&
+                  filter->filter->activate));
+     filter->ready = 0;
+     ret = filter->filter->activate ? filter->filter->activate(filter) :
+           ff_filter_activate_default(filter);
+-#if CONFIG_PROFILING
+-    filter->sum_working_time += av_gettime() - filter->last_tm;
+-#endif
++
++    if (av_profiling_get())
++        filter->sum_working_time += av_gettime() - filter->last_tm;
+ 
+     if (ret == FFERROR_NOT_READY)
+         ret = 0;
+diff --git a/libavfilter/avfilter.h b/libavfilter/avfilter.h
+index 05cb78d..e70142e 100644
+--- a/libavfilter/avfilter.h
++++ b/libavfilter/avfilter.h
+@@ -423,9 +423,7 @@ struct AVFilterContext {
+      */
+     int extra_hw_frames;
+ 
+-#if CONFIG_PROFILING
+     int64_t last_tm, init_working_time, sum_working_time;
+-#endif
+ };
+ 
+ /**
+diff --git a/libavutil/log.c b/libavutil/log.c
+index 93a156b..84d0282 100644
+--- a/libavutil/log.c
++++ b/libavutil/log.c
+@@ -52,6 +52,7 @@ static AVMutex mutex = AV_MUTEX_INITIALIZER;
+ #endif
+ 
+ static int av_log_level = AV_LOG_INFO;
++static int av_profiling = 0;
+ static int flags;
+ 
+ #define NB_LEVELS 8
+@@ -402,6 +403,16 @@ void av_log_set_callback(void (*callback)(void*, int, const char*, va_list))
+     av_log_callback = callback;
+ }
+ 
++int av_profiling_get(void)
++{
++    return av_profiling;
++}
++
++void av_profiling_set(int arg)
++{
++    av_profiling = arg;
++}
++
+ static void missing_feature_sample(int sample, void *avc, const char *msg,
+                                    va_list argument_list)
+ {
+diff --git a/libavutil/log.h b/libavutil/log.h
+index d9554e6..0fb29dd 100644
+--- a/libavutil/log.h
++++ b/libavutil/log.h
+@@ -297,6 +297,9 @@ void av_log_set_callback(void (*callback)(void*, int, const char*, va_list));
+ void av_log_default_callback(void *avcl, int level, const char *fmt,
+                              va_list vl);
+ 
++int av_profiling_get(void);
++void av_profiling_set(int arg);
++
+ /**
+  * Return the context name
+  *
+-- 
+1.8.3.1
+
