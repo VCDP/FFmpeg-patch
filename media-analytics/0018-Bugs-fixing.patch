@@ -1,0 +1,496 @@
+From a8f6a80c5accf595d13b6b74bb1f04143e32ca83 Mon Sep 17 00:00:00 2001
+From: Lin Xie <lin.xie@intel.com>
+Date: Thu, 30 May 2019 13:23:02 +0800
+Subject: [PATCH] Bugs fixing
+
+* Fix klocwork scanned defects
+* Add cropping coordinates checking
+* WA: Media driver can't support some color standard
+* Add extra '\0' for json string ending
+* Using 64 bits to hold the ts
+
+Signed-off-by: Wang, Shaofei <shaofei.wang@intel.com>
+Signed-off-by: Xie, Lin <lin.xie@intel.com>
+---
+ libavfilter/inference.c             | 76 +++++++++++++++++++++++++++----------
+ libavfilter/vf_inference_classify.c | 24 ++++++++----
+ libavfilter/vf_inference_detect.c   | 20 +++++++---
+ libavformat/iemetadataenc.c         | 43 +++++++++++++--------
+ libavformat/kafkaproto.c            |  4 +-
+ 5 files changed, 119 insertions(+), 48 deletions(-)
+
+diff --git a/libavfilter/inference.c b/libavfilter/inference.c
+index 380a5ed..36ad6ea 100644
+--- a/libavfilter/inference.c
++++ b/libavfilter/inference.c
+@@ -177,11 +177,11 @@ static int sw_crop_and_scale(AVFrame *frame, Rect *crop_rect,
+                              enum AVPixelFormat out_format,
+                              uint8_t *data[], int stride[])
+ {
+-    int bufsize;
+-    AVFrame *temp;
+-    struct SwsContext *sws_ctx;
++    int ret = 0;
++    AVFrame *temp = NULL;
++    struct SwsContext *sws_ctx = NULL;
+     const AVPixFmtDescriptor *desc;
+-    int x, y, w, h, hsub, vsub;
++    int x, y, w, h, hsub, vsub, bufsize;
+     int max_step[4]; ///< max pixel step for each plane, expressed as a number of bytes
+     enum AVPixelFormat expect_format = out_format;
+ 
+@@ -195,6 +195,10 @@ static int sw_crop_and_scale(AVFrame *frame, Rect *crop_rect,
+     av_frame_ref(temp, frame);
+ 
+     desc = av_pix_fmt_desc_get(temp->format);
++    if (!desc) {
++        ret = AVERROR(EINVAL);
++        goto exit;
++    }
+     hsub = desc->log2_chroma_w;
+     vsub = desc->log2_chroma_h;
+     av_image_fill_max_pixsteps(max_step, NULL, desc);
+@@ -203,8 +207,23 @@ static int sw_crop_and_scale(AVFrame *frame, Rect *crop_rect,
+     {
+         x = lrintf(crop_rect->x0);
+         y = lrintf(crop_rect->y0);
++        x = FFMAX(x, 0);
++        y = FFMAX(y, 0);
++        if (x >= frame->width || y >= frame->height) {
++            av_log(NULL, AV_LOG_ERROR, "Incorrect crop rect x:%d y:%d.\n", x, y);
++            ret = AVERROR(EINVAL);
++            goto exit;
++        }
++
+         w = lrintf(crop_rect->x1) - x;
+         h = lrintf(crop_rect->y1) - y;
++        w = FFMIN(w, frame->width - x);
++        h = FFMIN(h, frame->height - y);
++        if (w <= 0 || h <= 0) {
++            av_log(NULL, AV_LOG_ERROR, "Incorrect crop rect w:%d h:%d.\n", w, h);
++            ret = AVERROR(EINVAL);
++            goto exit;
++        }
+ 
+         temp->width  = w;
+         temp->height = h;
+@@ -232,22 +251,24 @@ static int sw_crop_and_scale(AVFrame *frame, Rect *crop_rect,
+                              SWS_BILINEAR, NULL, NULL, NULL);
+     if (!sws_ctx) {
+         av_log(NULL, AV_LOG_ERROR, "Create scaling context failed!\n");
+-        return AVERROR(EINVAL);
++        ret = AVERROR(EINVAL);
++        goto exit;
+     }
+ 
+     if (!data[0]) {
+         bufsize = av_image_alloc(data, stride, out_w, out_h, expect_format, 1);
+-        if (bufsize < 0)
+-            return AVERROR(ENOMEM);
++        if (bufsize < 0) {
++            ret = AVERROR(ENOMEM);
++            goto exit;
++        }
+     }
+ 
+     sws_scale(sws_ctx, (const uint8_t * const*)temp->data,
+               temp->linesize, 0, temp->height, data, stride);
+-
++exit:
+     av_frame_free(&temp);
+     sws_freeContext(sws_ctx);
+-
+-    return 0;
++    return ret;
+ }
+ 
+ void av_split(char *str, const char *delim, char **array, int *num, int max)
+@@ -345,6 +366,7 @@ int ff_inference_base_create(AVFilterContext *ctx,
+     s->model = s->module->load_model_with_config(&config);
+     if (!s->model) {
+         av_log(ctx, AV_LOG_ERROR, "could not load DNN model\n");
++        av_freep(&s->module);
+         av_freep(&s);
+         return AVERROR(ENOMEM);
+     }
+@@ -391,6 +413,8 @@ int ff_inference_base_create(AVFilterContext *ctx,
+ #undef DNN_ERR_CHECK
+     return 0;
+ fail:
++    s->module->free_model(&s->model);
++    av_freep(&s->module);
+     av_freep(&s);
+     return ret;
+ }
+@@ -458,12 +482,15 @@ int ff_inference_base_filter_frame(InferenceBaseContext *base, AVFrame *in)
+     DNNIOData input = { };
+ 
+     for (int i = 0; i < info->number; i++) {
+-        AVFrame *processed_frame;
++        AVFrame *processed_frame = NULL;
+         for (int j = 0; j < base->batch_size; j++) {
+             if (base->preprocess) {
+                 if (base->preprocess(base, i, in, &processed_frame) < 0)
+                     return AVERROR(EINVAL);
+             }
++
++            if (!processed_frame) return -1;
++
+             fill_dnn_data_from_frame(&input, processed_frame, j, 1, i);
+             base->model->set_input(base->model->model, &input);
+ #if CONFIG_VAAPI
+@@ -489,6 +516,8 @@ int ff_inference_base_get_infer_result(InferenceBaseContext *base,
+ 
+     av_assert0(metadata != NULL);
+ 
++    av_assert0(id < DNN_INPUT_OUTPUT_NUM);
++
+     // TODO: change to layer name for multiple outputs
+     data.in_out_idx = id;
+ 
+@@ -547,8 +576,9 @@ static int ff_vaapi_vpp_colour_standard(enum AVColorSpace av_cs)
+ #define CS(av, va) case AVCOL_SPC_ ## av: return VAProcColorStandard ## va;
+         CS(BT709,     BT709);
+         CS(BT470BG,   BT601);
+-        CS(SMPTE170M, SMPTE170M);
+-        CS(SMPTE240M, SMPTE240M);
++        // WORKAROUND: vaapi driver doesn't support all color space
++        CS(SMPTE170M, None); //SMPTE170M);
++        CS(SMPTE240M, None); //SMPTE240M);
+ #undef CS
+     default:
+         return VAProcColorStandardNone;
+@@ -621,7 +651,7 @@ int va_vpp_device_free(VAAPIVpp *va_vpp)
+         return 0;
+ 
+     if (va_vpp->va_surface != VA_INVALID_ID) {
+-        vaDestroySurfaces(va_vpp->hwctx->display, &va_vpp->va_surface, 1);
++        vas = vaDestroySurfaces(va_vpp->hwctx->display, &va_vpp->va_surface, 1);
+         if (vas != VA_STATUS_SUCCESS) {
+             av_log(NULL, AV_LOG_ERROR, "Failed to destroy surface %#x: "
+                     "%d (%s).\n", va_vpp->va_surface, vas, vaErrorStr(vas));
+@@ -734,11 +764,17 @@ static int va_vpp_crop_and_scale(VAAPIVpp *va_vpp,
+     } else {
+         int _x = lrintf(crop_rect->x0);
+         int _y = lrintf(crop_rect->y0);
++        _x = FFMAX(_x, 0);
++        _y = FFMAX(_y, 0);
++        if (_x >= input->width  || _y >= input->height) {
++            av_log(NULL, AV_LOG_ERROR, "Incorrect crop rect!\n");
++            return AVERROR(EINVAL);
++        }
+         input_region = (VARectangle) {
+             .x      = _x,
+             .y      = _y,
+-            .width  = lrintf(crop_rect->x1) - _x,
+-            .height = lrintf(crop_rect->y1) - _y,
++            .width  = FFMIN(lrintf(crop_rect->x1) - _x, input->width - _x),
++            .height = FFMIN(lrintf(crop_rect->y1) - _y, input->height - _y),
+         };
+     }
+ 
+@@ -816,7 +852,7 @@ void *ff_read_model_proc(const char *path)
+ 
+     file_size = ff_get_file_size(fp);
+ 
+-    proc_json = av_mallocz(file_size);
++    proc_json = av_mallocz(file_size + 1);
+     if (!proc_json)
+         goto end;
+ 
+@@ -859,7 +895,8 @@ void ff_load_default_model_proc(ModelInputPreproc *preproc, ModelOutputPostproc
+ 
+ int ff_parse_input_preproc(const void *json, ModelInputPreproc *m_preproc)
+ {
+-    cJSON *item, *preproc, *color, *layer, *object_class;
++    cJSON *item, *preproc;
++    cJSON *color = NULL, *layer = NULL, *object_class = NULL;
+ 
+     preproc = cJSON_GetObjectItem(json, "input_preproc");
+     if (preproc == NULL) {
+@@ -971,7 +1008,8 @@ int ff_parse_output_postproc(const void *json, ModelOutputPostproc *m_postproc)
+ 
+                 proc->labels = ref;
+ 
+-                infer_labels_dump(ref->data);
++                if (ref)
++                    infer_labels_dump(ref->data);
+             }
+         }
+ 
+diff --git a/libavfilter/vf_inference_classify.c b/libavfilter/vf_inference_classify.c
+index 283f9f4..2367a8c 100644
+--- a/libavfilter/vf_inference_classify.c
++++ b/libavfilter/vf_inference_classify.c
+@@ -182,8 +182,10 @@ static int attributes_to_text(AVFilterContext *ctx,
+         classify->confidence = confidence;
+         classify->label_buf  = av_buffer_ref(proc->labels);
+ 
+-        dump_softmax(ctx, classify->name, classify->label_id,
+-                     classify->confidence,classify->label_buf);
++        if (classify->label_buf) {
++            dump_softmax(ctx, classify->name, classify->label_id,
++                         classify->confidence,classify->label_buf);
++        }
+     } else if (method_compound) {
+         int i;
+         double threshold  = 0.5;
+@@ -677,7 +679,7 @@ static av_cold void classify_uninit(AVFilterContext *ctx)
+ 
+ static int filter_frame(AVFilterLink *inlink, AVFrame *in)
+ {
+-    int i, ret;
++    int i, ret = 0;
+     AVFilterContext *ctx        = inlink->dst;
+     InferenceClassifyContext *s = ctx->priv;
+     AVFilterLink *outlink       = inlink->dst->outputs[0];
+@@ -685,8 +687,8 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *in)
+     AVFrameSideData         *sd, *new_sd;
+     BBoxesArray             *boxes;
+     InferDetectionMeta      *d_meta;
+-    ClassifyArray           *c_array;
+-    InferClassificationMeta *c_meta;
++    ClassifyArray           *c_array = NULL;
++    InferClassificationMeta *c_meta  = NULL;
+ 
+     if (s->frame_number % s->every_nth_frame != 0)
+         goto done;
+@@ -697,7 +699,7 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *in)
+ 
+     d_meta = (InferDetectionMeta *)sd->data;
+     if (!d_meta)
+-        goto fail;
++        goto done;
+ 
+     boxes = d_meta->bboxes;
+     if (!boxes || !boxes->num)
+@@ -790,6 +792,10 @@ done:
+     s->frame_number++;
+     return ff_filter_frame(outlink, in);
+ fail:
++    if (c_array)
++        av_freep(&c_array);
++    if (c_meta)
++        av_freep(&c_meta);
+     av_frame_free(&in);
+     return ret;
+ }
+@@ -804,6 +810,9 @@ static av_cold int config_input(AVFilterLink *inlink)
+     enum AVPixelFormat expect_format = AV_PIX_FMT_BGR24;
+     const AVPixFmtDescriptor   *desc = av_pix_fmt_desc_get(inlink->format);
+ 
++    if (!desc)
++        return AVERROR(EINVAL);
++
+     for (i = 0; i < s->loaded_num; i++) {
+         InferenceBaseContext *base = s->infer_bases[i];
+         DNNModelInfo         *info = ff_inference_base_get_input_info(base);
+@@ -830,7 +839,8 @@ static av_cold int config_input(AVFilterLink *inlink)
+         vpp->frames[0] = frame;
+ 
+         if (vpp->device == VPP_DEVICE_SW) {
+-            if (ret = av_frame_get_buffer(frame, 0) < 0)
++            ret = av_frame_get_buffer(frame, 0);
++            if (ret < 0)
+                 goto fail;
+         } else {
+ #if CONFIG_VAAPI
+diff --git a/libavfilter/vf_inference_detect.c b/libavfilter/vf_inference_detect.c
+index cfc0524..8b772c3 100644
+--- a/libavfilter/vf_inference_detect.c
++++ b/libavfilter/vf_inference_detect.c
+@@ -104,8 +104,10 @@ static int detect_postprocess(AVFilterContext *ctx, InferTensorMeta *meta, AVFra
+         return AVERROR(ENOMEM);
+ 
+     detect_meta = av_malloc(sizeof(*detect_meta));
+-    if (!detect_meta)
++    if (!detect_meta) {
++        av_free(boxes);
+         return AVERROR(ENOMEM);
++    }
+ 
+     // FIXME: output object size standard??
+     av_assert0(object_size == 7);
+@@ -116,6 +118,10 @@ static int detect_postprocess(AVFilterContext *ctx, InferTensorMeta *meta, AVFra
+ 
+     for (i = 0; i < max_proposal_count; i++) {
+         InferDetection *new_bbox = av_mallocz(sizeof(*new_bbox));
++        if (!new_bbox) {
++            av_log(ctx, AV_LOG_ERROR, "Could not alloc bbox!\n");
++            break;
++        }
+ 
+         new_bbox->label_id   = (int)detection[i * object_size + 1];
+         new_bbox->confidence = detection[i * object_size + 2];
+@@ -144,18 +150,20 @@ static int detect_postprocess(AVFilterContext *ctx, InferTensorMeta *meta, AVFra
+                p->label_id, p->confidence,p->x_min, p->y_min, p->x_max, p->y_max);
+     }
+ 
++    detect_meta->bboxes = boxes;
++
+     ref = av_buffer_create((uint8_t *)detect_meta, sizeof(*detect_meta),
+                            &infer_detect_metadata_buffer_free, NULL, 0);
+-    if (!ref)
++    if (!ref) {
++        infer_detect_metadata_buffer_free(NULL, (uint8_t *)detect_meta);
+         return AVERROR(ENOMEM);
+-
+-    detect_meta->bboxes = boxes;
++    }
+ 
+     // add meta data to side data
+     sd = av_frame_new_side_data_from_buf(frame, AV_FRAME_DATA_INFERENCE_DETECTION, ref);
+     if (!sd) {
+         av_buffer_unref(&ref);
+-        av_log(NULL, AV_LOG_ERROR, "Could not add new side data\n");
++        av_log(ctx, AV_LOG_ERROR, "Could not add new side data\n");
+         return AVERROR(ENOMEM);
+     }
+ 
+@@ -225,6 +233,8 @@ static int config_input(AVFilterLink *inlink)
+     // right now, no model needs multiple inputs
+     av_assert0(info->number == 1);
+ 
++    if (!desc)
++        return AVERROR(EINVAL);
+     vpp->device = (desc->flags & AV_PIX_FMT_FLAG_HWACCEL) ? VPP_DEVICE_HW : VPP_DEVICE_SW;
+ 
+     // allocate frame to save scaled output
+diff --git a/libavformat/iemetadataenc.c b/libavformat/iemetadataenc.c
+index b73fabe..c382964 100644
+--- a/libavformat/iemetadataenc.c
++++ b/libavformat/iemetadataenc.c
+@@ -31,9 +31,9 @@
+ #define JSON_TAIL "},\n"
+ #define JSON_ESCAPE "    "
+ #define JSON_ARRAY_TAIL "]\n"
+-#define JSON_FVALUE(str, name, value) sprintf(str, "\"%s\": %.1f,\n", name, value)
+-#define JSON_IVALUE(str, name, value) sprintf(str, "\"%s\": %d,\n", name, value)
+-#define JSON_LIVALUE(str, name, value) sprintf(str, "\"%s\": %ld,\n", name, value)
++#define JSON_FVALUE(str, name, value) snprintf(str, TMP_STR_BUF_SIZE, "\"%s\": %.1f,\n", name, value)
++#define JSON_IVALUE(str, name, value) snprintf(str, TMP_STR_BUF_SIZE, "\"%s\": %d,\n", name, value)
++#define JSON_LIVALUE(str, name, value) snprintf(str,TMP_STR_BUF_SIZE, "\"%s\": %lu,\n", name, value)
+ #define JSON_STRING(str, name, value) snprintf(str, TMP_STR_BUF_SIZE, "\"%s\": \"%s\",\n", name, value)
+ 
+ #define BUFFER_SIZE (1024 * 1024)
+@@ -53,10 +53,12 @@ typedef struct IeMetaDataMuxer {
+ static int fill_content(AVFormatContext *s, const char *str, int flush)
+ {
+     IeMetaDataMuxer *md = s->priv_data;
+-    unsigned int len = strlen(str);
++    unsigned int len;
+ 
+     if (!str)
+         return 0;
++
++    len = strlen(str);
+     if (str[len] == '\0')
+         len++;
+     if (((len + md->meta_data_length) > BUFFER_SIZE)) {
+@@ -97,6 +99,7 @@ static int pack(AVFormatContext *s, const char *org, ...)
+     const char *p = org;
+     char *name, *str;
+     int ipara;
++    int64_t lipara;
+     float fpara;
+     IeMetaDataMuxer *md = s->priv_data;
+     len = strlen(org);
+@@ -139,9 +142,12 @@ static int pack(AVFormatContext *s, const char *org, ...)
+             case 'f': //float value
+             case 's': //str value
+                 name = va_arg(argp, char*);
+-                if (p[i] == 'i' || p[i] == 'I') {
++                if (p[i] == 'i') {
+                     ipara = va_arg(argp, int);
+-                    p[i] == 'i' ? JSON_IVALUE(tmp_str, name, ipara) : JSON_LIVALUE(tmp_str, name, ipara);
++                    JSON_IVALUE(tmp_str, name, ipara);
++                } else if (p[i] == 'I') {
++                    lipara = va_arg(argp, int64_t);
++                    JSON_LIVALUE(tmp_str, name, lipara);
+                 } else if (p[i] == 'f') {
+                     fpara = va_arg(argp, double);
+                     JSON_FVALUE(tmp_str, name, fpara);
+@@ -220,9 +226,14 @@ static int jhead_write(AVFormatContext *s, AVFrame *frm_data)
+ {
+     char tmp_str[TMP_STR_BUF_SIZE];
+     IeMetaDataMuxer *md = s->priv_data;
+-    long nano_ts = s->streams[0] ?
+-        av_q2d(s->streams[0]->time_base) * frm_data->pts * 1000000000 :
+-        -1;
++    int64_t nano_ts = 1000000000;
++
++    if (s->streams[0])
++        nano_ts = frm_data->pts * (nano_ts * s->streams[0]->time_base.num / s->streams[0]->time_base.den);
++    else
++        nano_ts = -1;
++
++    memset(tmp_str, 0, TMP_STR_BUF_SIZE);
+ 
+     if (md->output_type == 1 && md->id_number != 0) {
+         pack(s, ",");
+@@ -236,23 +247,25 @@ static int jhead_write(AVFormatContext *s, AVFrame *frm_data)
+                 tmp_str);
+     else {
+         char id[80];
+-        sprintf(id, "id-%d", md->id_number++);
++        snprintf(id, 80, "id-%d", md->id_number++);
+         pack(s, "(IsS", id, "timestamp", nano_ts,
+                 "source", md->source,
+                 tmp_str);
+     }
+ 
+     if (!md->tag)
+-        sprintf(tmp_str, "\"tags\":{\"custom_key\":\"custom_value\"},\n");
++        snprintf(tmp_str, TMP_STR_BUF_SIZE, "\"tags\":{\"custom_key\":\"custom_value\"},\n");
+     else {
+         char *token, *save_ptr, *tag_str;
+         int offset;
+         char key[128] = "";
+         char tags[256];
+         float value = 0.0;
++        int len = (strlen(md->tag) < 255) ? strlen(md->tag) : 255;
+ 
+-        memcpy(tags, md->tag, strlen(md->tag));
+-        offset = sprintf(tmp_str, "\"tags\":{");
++        memset(tags, 0, 256);
++        memcpy(tags, md->tag, len);
++        offset = snprintf(tmp_str, TMP_STR_BUF_SIZE, "\"tags\":{");
+         for (tag_str = tags; ; tag_str = NULL) {
+             token = strtok_r(tag_str, ",", &save_ptr);
+             if (token == NULL)
+@@ -260,7 +273,7 @@ static int jhead_write(AVFormatContext *s, AVFrame *frm_data)
+             sscanf(token, "%127[^:]:%f", key, &value);
+             offset += snprintf(tmp_str + offset, TMP_STR_BUF_SIZE - offset, "\"%s\":%1.3f,", key, value);
+         }
+-        sprintf(tmp_str + offset - 2, "},\n");
++        snprintf(tmp_str + offset - 2, TMP_STR_BUF_SIZE - offset + 2, "},\n");
+     }
+     pack(s, "S[", tmp_str, "objects");
+ 
+@@ -310,7 +323,7 @@ static int write_packet(AVFormatContext *s, AVPacket *pkt)
+ 
+                 for (i = 0; i < bboxes->num; i++) {
+                     if (!bboxes->bbox[i]->label_buf) {
+-                        sprintf(tmp_str, "%s", "face");
++                        snprintf(tmp_str, TMP_STR_BUF_SIZE, "%s", "face");
+                     } else {
+                         int label_id = bboxes->bbox[i]->label_id;
+                         LabelsArray *array = (LabelsArray*)(bboxes->bbox[i]->label_buf->data);
+diff --git a/libavformat/kafkaproto.c b/libavformat/kafkaproto.c
+index 526260a..e3d7007 100644
+--- a/libavformat/kafkaproto.c
++++ b/libavformat/kafkaproto.c
+@@ -61,8 +61,8 @@ static int kafka_open(URLContext *s, const char *uri, int flags, AVDictionary **
+     topic = strrchr(s->filename, '/') + 1;
+ 
+     kc->conf = rd_kafka_conf_new();
+-    port ? sprintf(brokers, "%s:%d", hostname, port)
+-        : sprintf(brokers, "%s:9092", hostname);
++    port ? snprintf(brokers, 256, "%s:%d", hostname, port)
++        : snprintf(brokers, 256, "%s:9092", hostname);
+ 
+     /* Set bootstrap broker(s) as a comma-separated list of
+      * host or host:port (default port 9092).
+-- 
+2.7.4
+
