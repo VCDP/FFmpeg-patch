@@ -1,15 +1,15 @@
-From 76b6bf3b831636317bb1f86397b4f06a45a2d2db Mon Sep 17 00:00:00 2001
-From: Lin Xie <lin.xie@intel.com>
-Date: Thu, 30 May 2019 11:12:24 +0800
-Subject: [PATCH] refine, total fps without init(filter) and add decode/encode
- profiling for decode, only sw profiling are supported now.
+From 1ffce54c172b921bb35fb965f7e60ba074a711f7 Mon Sep 17 00:00:00 2001
+From: "Wang, Shaofei" <shaofei.wang@intel.com>
+Date: Thu, 30 May 2019 07:16:28 -0400
+Subject: [PATCH] [PATCH] refine, total fps without init(filter) and add
+ decode/encode profiling for decode, only sw profiling are supported now.
 
 Signed-off-by: Wang, Shaofei <shaofei.wang@intel.com>
 Signed-off-by: Hu, Yuan <yuan1.hu@intel.com>
 
-Change-Id: Ie3ce4c87a3aab22993d3dec1d4ccd8e79e1447a6
+Change-Id: I02083c4354eec4d82f4c844d90f801d538195f93
 ---
- fftools/ffmpeg.c           | 73 +++++++++++++++++++++++++++++++++++++++++++++-
+ fftools/ffmpeg.c           | 71 +++++++++++++++++++++++++++++++++++++++++++++-
  fftools/ffmpeg.h           |  1 +
  fftools/ffmpeg_opt.c       |  7 +++++
  libavcodec/avcodec.h       |  2 ++
@@ -17,14 +17,14 @@ Change-Id: Ie3ce4c87a3aab22993d3dec1d4ccd8e79e1447a6
  libavcodec/encode.c        |  6 ++++
  libavcodec/pthread_frame.c | 13 +++++++++
  libavcodec/utils.c         |  1 +
- libavfilter/avfilter.c     | 18 ++++++++++++
+ libavfilter/avfilter.c     | 15 ++++++++++
  libavfilter/avfilter.h     |  2 ++
  libavutil/log.c            | 11 +++++++
  libavutil/log.h            |  3 ++
- 12 files changed, 141 insertions(+), 1 deletion(-)
+ 12 files changed, 136 insertions(+), 1 deletion(-)
 
 diff --git a/fftools/ffmpeg.c b/fftools/ffmpeg.c
-index da4259a..1075f9b 100644
+index 2752652..ab52b92 100644
 --- a/fftools/ffmpeg.c
 +++ b/fftools/ffmpeg.c
 @@ -151,6 +151,7 @@ int        nb_input_files   = 0;
@@ -35,7 +35,7 @@ index da4259a..1075f9b 100644
  OutputFile   **output_files   = NULL;
  int         nb_output_files   = 0;
  
-@@ -1659,6 +1660,7 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
+@@ -1765,6 +1766,7 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
      double speed;
      int64_t pts = INT64_MIN + 1;
      static int64_t last_time = -1;
@@ -43,7 +43,7 @@ index da4259a..1075f9b 100644
      static int qp_histogram[52];
      int hours, mins, secs, us;
      const char *hours_sign;
-@@ -1680,6 +1682,18 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
+@@ -1786,6 +1788,18 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
  
      t = (cur_time-timer_start) / 1000000.0;
  
@@ -62,7 +62,7 @@ index da4259a..1075f9b 100644
  
      oc = output_files[0]->ctx;
  
-@@ -1702,7 +1716,7 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
+@@ -1808,7 +1822,7 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
              av_bprintf(&buf_script, "stream_%d_%d_q=%.1f\n",
                         ost->file_index, ost->index, q);
          }
@@ -71,7 +71,7 @@ index da4259a..1075f9b 100644
              float fps;
  
              frame_number = ost->frame_number;
-@@ -1762,6 +1776,21 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
+@@ -1868,6 +1882,19 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
          if (is_last_report)
              nb_frames_drop += ost->last_dropped;
      }
@@ -85,15 +85,13 @@ index da4259a..1075f9b 100644
 +        total_fps = t > 1 ? total_frames_num / t : 0;
 +        av_bprintf(&buf, "| profiling | total frame=%d ", total_frames_num);
 +        av_bprintf(&buf, "fps=%.2f |", total_fps);
-+        if (init_time > 1000000) {
-+            total_fps = t > 1 ? total_frames_num / (t - init_time / 1000000.0 ): 0;
-+            av_bprintf(&buf, ", fps without filter init=%.2f |", total_fps);
-+        }
++        total_fps = t > 1 ? total_frames_num / (t - init_time / 1000000.0 ): 0;
++        av_bprintf(&buf, ", fps without filter init=%.2f |", total_fps);
 +    }
  
      secs = FFABS(pts) / AV_TIME_BASE;
      us = FFABS(pts) % AV_TIME_BASE;
-@@ -4736,6 +4765,13 @@ static int transcode(void)
+@@ -4952,6 +4979,13 @@ static int transcode(void)
      for (i = 0; i < nb_output_streams; i++) {
          ost = output_streams[i];
          if (ost->encoding_needed) {
@@ -107,7 +105,7 @@ index da4259a..1075f9b 100644
              av_freep(&ost->enc_ctx->stats_in);
          }
          total_packets_written += ost->packets_written;
-@@ -4750,12 +4786,47 @@ static int transcode(void)
+@@ -4966,12 +5000,47 @@ static int transcode(void)
      for (i = 0; i < nb_input_streams; i++) {
          ist = input_streams[i];
          if (ist->decoding_needed) {
@@ -156,10 +154,10 @@ index da4259a..1075f9b 100644
      hw_device_free_all();
  
 diff --git a/fftools/ffmpeg.h b/fftools/ffmpeg.h
-index eb1eaf6..dd99dd2 100644
+index 436e428..7142873 100644
 --- a/fftools/ffmpeg.h
 +++ b/fftools/ffmpeg.h
-@@ -590,6 +590,7 @@ extern int video_sync_method;
+@@ -601,6 +601,7 @@ extern int video_sync_method;
  extern float frame_drop_threshold;
  extern int do_benchmark;
  extern int do_benchmark_all;
@@ -168,7 +166,7 @@ index eb1eaf6..dd99dd2 100644
  extern int do_hex_dump;
  extern int do_pkt_dump;
 diff --git a/fftools/ffmpeg_opt.c b/fftools/ffmpeg_opt.c
-index d4851a2..eda8f3e 100644
+index fa5a556..bf71423 100644
 --- a/fftools/ffmpeg_opt.c
 +++ b/fftools/ffmpeg_opt.c
 @@ -94,6 +94,7 @@ float frame_drop_threshold = 0;
@@ -179,7 +177,7 @@ index d4851a2..eda8f3e 100644
  int do_hex_dump       = 0;
  int do_pkt_dump       = 0;
  int copy_ts           = 0;
-@@ -3294,6 +3295,10 @@ int ffmpeg_parse_options(int argc, char **argv)
+@@ -3295,6 +3296,10 @@ int ffmpeg_parse_options(int argc, char **argv)
  
      check_filter_outputs();
  
@@ -190,7 +188,7 @@ index d4851a2..eda8f3e 100644
  fail:
      uninit_parse_context(&octx);
      if (ret < 0) {
-@@ -3396,6 +3401,8 @@ const OptionDef options[] = {
+@@ -3397,6 +3402,8 @@ const OptionDef options[] = {
          "add timings for benchmarking" },
      { "benchmark_all",  OPT_BOOL | OPT_EXPERT,                       { &do_benchmark_all },
        "add timings for each task" },
@@ -200,10 +198,10 @@ index d4851a2..eda8f3e 100644
        "write program-readable progress information", "url" },
      { "stdin",          OPT_BOOL | OPT_EXPERT,                       { &stdin_interaction },
 diff --git a/libavcodec/avcodec.h b/libavcodec/avcodec.h
-index 7ffef76..b0d2f10 100644
+index 84ccd8d..6d3ab2e 100644
 --- a/libavcodec/avcodec.h
 +++ b/libavcodec/avcodec.h
-@@ -3313,6 +3313,8 @@ typedef struct AVCodecContext {
+@@ -3339,6 +3339,8 @@ typedef struct AVCodecContext {
       * used as reference pictures).
       */
      int extra_hw_frames;
@@ -213,7 +211,7 @@ index 7ffef76..b0d2f10 100644
  
  #if FF_API_CODEC_GET_SET
 diff --git a/libavcodec/decode.c b/libavcodec/decode.c
-index c89c77c..fb51c9e 100644
+index b18ad02..4ded2f6 100644
 --- a/libavcodec/decode.c
 +++ b/libavcodec/decode.c
 @@ -399,6 +399,7 @@ static int64_t guess_correct_pts(AVCodecContext *ctx,
@@ -320,7 +318,7 @@ index 1661d48..8b6d6e4 100644
  
      if ((avctx->codec->capabilities & AV_CODEC_CAP_EXPERIMENTAL) &&
 diff --git a/libavfilter/avfilter.c b/libavfilter/avfilter.c
-index 93e866b..f6e5cfb 100644
+index 93e866b..2951bc4 100644
 --- a/libavfilter/avfilter.c
 +++ b/libavfilter/avfilter.c
 @@ -44,6 +44,7 @@
@@ -339,31 +337,28 @@ index 93e866b..f6e5cfb 100644
  
      if (!filter)
          return;
-@@ -925,6 +927,9 @@ int avfilter_init_str(AVFilterContext *filter, const char *args)
+@@ -925,6 +927,7 @@ int avfilter_init_str(AVFilterContext *filter, const char *args)
  {
      AVDictionary *options = NULL;
      AVDictionaryEntry *e;
-+#if CONFIG_PROFILING
 +    int64_t tm_init;
-+#endif
      int ret = 0;
  
      if (args && *args) {
-@@ -1015,7 +1020,13 @@ int avfilter_init_str(AVFilterContext *filter, const char *args)
+@@ -1015,7 +1018,12 @@ int avfilter_init_str(AVFilterContext *filter, const char *args)
          }
      }
  
-+#if CONFIG_PROFILING
-+    tm_init = av_gettime();
-+#endif
++    if (av_profiling_get())
++        tm_init = av_gettime();
      ret = avfilter_init_dict(filter, &options);
-+#if CONFIG_PROFILING
-+    filter->init_working_time = av_gettime() - tm_init;
-+#endif
++    if (av_profiling_get())
++        filter->init_working_time = av_gettime() - tm_init;
++
      if (ret < 0)
          goto fail;
  
-@@ -1422,12 +1433,19 @@ int ff_filter_activate(AVFilterContext *filter)
+@@ -1422,12 +1430,19 @@ int ff_filter_activate(AVFilterContext *filter)
  {
      int ret;
  
@@ -440,5 +435,5 @@ index d9554e6..0fb29dd 100644
   * Return the context name
   *
 -- 
-2.7.4
+1.8.3.1
 
