@@ -1,0 +1,1063 @@
+From ff921d4331896e7b1bfcda980694298214bc6145 Mon Sep 17 00:00:00 2001
+From: Lin Xie <lin.xie@intel.com>
+Date: Mon, 10 Jun 2019 16:03:28 +0800
+Subject: [PATCH] Face reidentification refine
+
+---
+ configure                              |   3 +
+ libavfilter/Makefile                   |   2 +
+ libavfilter/allfilters.c               |   2 +
+ libavfilter/inference.h                |   5 +-
+ libavfilter/vf_inference_classify.c    | 335 ++++-----------------------------
+ libavfilter/vf_inference_identify.c    | 328 ++++++++++++++++++++++++++++++++
+ libavfilter/vf_inference_metaconvert.c | 190 +++++++++++++++++++
+ 7 files changed, 570 insertions(+), 295 deletions(-)
+ create mode 100644 libavfilter/vf_inference_identify.c
+ create mode 100644 libavfilter/vf_inference_metaconvert.c
+
+diff --git a/configure b/configure
+index b8f9c4a..dcaaf95 100755
+--- a/configure
++++ b/configure
+@@ -3416,6 +3416,9 @@ inference_classify_filter_deps="libinference_engine libcjson"
+ inference_classify_filter_select="dnn"
+ inference_detect_filter_deps="libinference_engine libcjson"
+ inference_detect_filter_select="dnn"
++inference_identify_filter_deps="libinference_engine libcjson"
++inference_identify_filter_select="dnn"
++inference_metaconvert_filter_deps="libinference_engine libcjson"
+ interlace_filter_deps="gpl"
+ kerndeint_filter_deps="gpl"
+ ladspa_filter_deps="ladspa libdl"
+diff --git a/libavfilter/Makefile b/libavfilter/Makefile
+index d9e0602..11f0fb4 100644
+--- a/libavfilter/Makefile
++++ b/libavfilter/Makefile
+@@ -260,6 +260,8 @@ OBJS-$(CONFIG_IDET_FILTER)                   += vf_idet.o
+ OBJS-$(CONFIG_IL_FILTER)                     += vf_il.o
+ OBJS-$(CONFIG_INFERENCE_CLASSIFY_FILTER)     += vf_inference_classify.o
+ OBJS-$(CONFIG_INFERENCE_DETECT_FILTER)       += vf_inference_detect.o
++OBJS-$(CONFIG_INFERENCE_IDENTIFY_FILTER)     += vf_inference_identify.o
++OBJS-$(CONFIG_INFERENCE_METACONVERT_FILTER)  += vf_inference_metaconvert.o
+ OBJS-$(CONFIG_INFLATE_FILTER)                += vf_neighbor.o
+ OBJS-$(CONFIG_INTERLACE_FILTER)              += vf_tinterlace.o
+ OBJS-$(CONFIG_INTERLEAVE_FILTER)             += f_interleave.o
+diff --git a/libavfilter/allfilters.c b/libavfilter/allfilters.c
+index 158c75b..4588c2b 100644
+--- a/libavfilter/allfilters.c
++++ b/libavfilter/allfilters.c
+@@ -246,6 +246,8 @@ extern AVFilter ff_vf_idet;
+ extern AVFilter ff_vf_il;
+ extern AVFilter ff_vf_inference_classify;
+ extern AVFilter ff_vf_inference_detect;
++extern AVFilter ff_vf_inference_identify;
++extern AVFilter ff_vf_inference_metaconvert;
+ extern AVFilter ff_vf_inflate;
+ extern AVFilter ff_vf_interlace;
+ extern AVFilter ff_vf_interleave;
+diff --git a/libavfilter/inference.h b/libavfilter/inference.h
+index 0512403..1d7971e 100644
+--- a/libavfilter/inference.h
++++ b/libavfilter/inference.h
+@@ -193,10 +193,13 @@ typedef struct InferDetectionMeta {
+ typedef struct InferClassification {
+     int     detect_id;        ///< detected bbox index
+     char   *name;             ///< class name, e.g. emotion, age
++    char   *layer_name;       ///< output layer name
++    char   *model;            ///< model name
+     int     label_id;         ///< label index in labels
+     float   confidence;
+     float   value;
+-    AVBufferRef *label_buf;   ///< label ref buf from label file
++    AVBufferRef *label_buf;   ///< label buffer
++    AVBufferRef *tensor_buf;  ///< output tensor buffer
+ } InferClassification;
+ 
+ /* dynamic classifications array */
+diff --git a/libavfilter/vf_inference_classify.c b/libavfilter/vf_inference_classify.c
+index 2367a8c..b36a7ca 100644
+--- a/libavfilter/vf_inference_classify.c
++++ b/libavfilter/vf_inference_classify.c
+@@ -40,13 +40,7 @@
+ #define OFFSET(x) offsetof(InferenceClassifyContext, x)
+ #define FLAGS (AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_FILTERING_PARAM)
+ 
+-#define PI 3.1415926
+ #define MAX_MODEL_NUM 8
+-#define FACE_FEATURE_VECTOR_LEN 256
+-
+-typedef int (*ClassifyInit)(AVFilterContext *ctx, size_t index);
+-
+-typedef int (*ClassifyUnInit)(AVFilterContext *ctx, size_t index);
+ 
+ typedef int (*ClassifyProcess)(AVFilterContext*, int, int, int,
+                                InferTensorMeta*, InferClassificationMeta*);
+@@ -56,15 +50,10 @@ typedef struct InferenceClassifyContext {
+ 
+     InferenceBaseContext *infer_bases[MAX_MODEL_NUM];
+ 
+-    char  *labels;
+-    char  *names;
+-
+     char  *model_file;
+     char  *model_proc;
+     char  *vpp_format;
+-    char  *feature_file;    ///< binary feature file for face identification
+-    int    feature_num;     ///< identification face feature number
+-    double feature_angle;   ///< face identification threshold angle value
++
+     int    loaded_num;
+     int    backend_type;
+     int    device_type;
+@@ -73,12 +62,6 @@ typedef struct InferenceClassifyContext {
+     int    frame_number;
+     int    every_nth_frame;
+ 
+-    void           *priv[MAX_MODEL_NUM];
+-    char           *name_array[MAX_MODEL_NUM];
+-    AVBufferRef    *label_bufs[MAX_MODEL_NUM];
+-
+-    ClassifyInit    init[MAX_MODEL_NUM];
+-    ClassifyUnInit  uninit[MAX_MODEL_NUM];
+     ClassifyProcess post_process[MAX_MODEL_NUM];
+ 
+     void *proc_config[MAX_MODEL_NUM];
+@@ -86,23 +69,6 @@ typedef struct InferenceClassifyContext {
+     ModelOutputPostproc model_postproc[MAX_MODEL_NUM];
+ } InferenceClassifyContext;
+ 
+-typedef struct FaceIdentifyContext {
+-    size_t   vector_num;
+-    double  *norm_std;
+-    float  **feature_vecs;
+-} FaceIdentifyContext;
+-
+-static void infer_labels_buffer_free(void *opaque, uint8_t *data)
+-{
+-    int i;
+-    LabelsArray *labels = (LabelsArray *)data;
+-
+-    for (i = 0; i < labels->num; i++)
+-        av_freep(&labels->label[i]);
+-
+-    av_free(data);
+-}
+-
+ static void infer_classify_metadata_buffer_free(void *opaque, uint8_t *data)
+ {
+     int i;
+@@ -113,6 +79,7 @@ static void infer_classify_metadata_buffer_free(void *opaque, uint8_t *data)
+         for (i = 0; i < classes->num; i++) {
+             InferClassification *c = classes->classifications[i];
+             av_buffer_unref(&c->label_buf);
++            av_buffer_unref(&c->tensor_buf);
+             av_freep(&c);
+         }
+         av_freep(&classes);
+@@ -265,6 +232,40 @@ static int tensor_to_text(AVFilterContext *ctx,
+     return 0;
+ }
+ 
++static int default_postprocess(AVFilterContext *ctx,
++                               int detect_id,
++                               int result_id,
++                               int model_id,
++                               InferTensorMeta *meta,
++                               InferClassificationMeta *c_meta)
++{
++    InferenceClassifyContext *s = ctx->priv;
++    InferenceBaseContext *base  = s->infer_bases[model_id];
++    DNNModelInfo *info = ff_inference_base_get_output_info(base);
++    InferClassification *classify;
++
++    if (!meta->data) return -1;
++
++    classify = av_mallocz(sizeof(*classify));
++    if (!classify)
++        return AVERROR(ENOMEM);
++
++    classify->detect_id  = detect_id;
++    classify->layer_name = info->layer_name[result_id];
++    classify->model      = s->model_file;
++
++    classify->tensor_buf = av_buffer_alloc(meta->total_bytes);
++    if (!classify->tensor_buf)
++        return AVERROR(ENOMEM);
++    if (meta->total_bytes > 0)
++        memcpy(classify->tensor_buf->data, meta->data, meta->total_bytes);
++
++    av_dynarray_add(&c_meta->c_array->classifications, &c_meta->c_array->num, classify);
++
++    av_log(ctx, AV_LOG_DEBUG, "default output[%s] size: %zu\n", classify->layer_name, meta->total_bytes);
++    return 0;
++}
++
+ static int commmon_postprocess(AVFilterContext *ctx,
+                                int detect_id,
+                                int result_id,
+@@ -299,7 +300,7 @@ static int commmon_postprocess(AVFilterContext *ctx,
+     proc = &s->model_postproc[model_id].procs[proc_id];
+ 
+     if (proc->converter == NULL)
+-        return 0;
++        return default_postprocess(ctx, detect_id, result_id, model_id, meta, c_meta);
+ 
+     if (!strcmp(proc->converter, "attributes"))
+         return attributes_to_text(ctx, detect_id, proc, meta, c_meta);
+@@ -310,193 +311,6 @@ static int commmon_postprocess(AVFilterContext *ctx,
+     return 0;
+ }
+ 
+-static int face_identify_init(AVFilterContext *ctx, size_t index)
+-{
+-    FaceIdentifyContext *identify_ctx;
+-    InferenceClassifyContext *s = ctx->priv;
+-
+-    int i, ret, feature_size, expected_size;
+-    size_t vec_size_in_bytes = sizeof(float) * FACE_FEATURE_VECTOR_LEN;
+-
+-    FILE *fp = fopen(s->feature_file, "rb");
+-    if (!fp) {
+-        av_log(ctx, AV_LOG_ERROR, "Could not open feature file:%s\n", s->feature_file);
+-        return AVERROR(EIO);
+-    }
+-
+-    av_assert0(index < MAX_MODEL_NUM);
+-
+-    feature_size = ff_get_file_size(fp);
+-
+-    if (feature_size == -1) {
+-        fclose(fp);
+-        av_log(ctx, AV_LOG_ERROR, "Couldn't get size of feature file.\n");
+-        return AVERROR(EINVAL);
+-    } else if (feature_size % FACE_FEATURE_VECTOR_LEN) {
+-        fclose(fp);
+-        av_log(ctx, AV_LOG_ERROR, "Feature data must align to %d.\n", FACE_FEATURE_VECTOR_LEN);
+-        return AVERROR(EINVAL);
+-    }
+-
+-    if (s->feature_num > 0) {
+-        expected_size = s->feature_num * vec_size_in_bytes;
+-        if (expected_size != feature_size) {
+-            fclose(fp);
+-            av_log(ctx, AV_LOG_ERROR, "Unexpected feature file size.\n");
+-            return AVERROR(EINVAL);
+-        }
+-    } else {
+-        s->feature_num = feature_size / vec_size_in_bytes;
+-    }
+-
+-    identify_ctx = av_mallocz(sizeof(*identify_ctx));
+-    if (!identify_ctx) {
+-        ret = AVERROR(ENOMEM);
+-        goto fail;
+-    }
+-
+-    identify_ctx->vector_num = s->feature_num;
+-
+-    identify_ctx->feature_vecs = av_mallocz(sizeof(float *) * identify_ctx->vector_num);
+-    if (!identify_ctx->feature_vecs) {
+-        ret = AVERROR(ENOMEM);
+-        goto fail;
+-    }
+-
+-    rewind(fp);
+-
+-    for (i = 0; i <identify_ctx->vector_num; i++) {
+-        identify_ctx->feature_vecs[i] = av_malloc(vec_size_in_bytes);
+-        if (!identify_ctx->feature_vecs[i]) {
+-            ret = AVERROR(ENOMEM);
+-            goto fail;
+-        }
+-        if (fread(identify_ctx->feature_vecs[i], vec_size_in_bytes, 1, fp) != 1) {
+-            ret = AVERROR(EINVAL);
+-            goto fail;
+-        }
+-    }
+-
+-    identify_ctx->norm_std = av_mallocz(sizeof(double) * identify_ctx->vector_num);
+-    if (!identify_ctx->norm_std) {
+-        ret = AVERROR(ENOMEM);
+-        goto fail;
+-    }
+-
+-    for (i = 0; i < identify_ctx->vector_num; i++)
+-        identify_ctx->norm_std[i] = av_norm(identify_ctx->feature_vecs[i],
+-                                            FACE_FEATURE_VECTOR_LEN);
+-
+-    s->priv[index] = identify_ctx;
+-    fclose(fp);
+-    return 0;
+-fail:
+-    fclose(fp);
+-
+-    if (identify_ctx) {
+-        if (identify_ctx->feature_vecs) {
+-            for (i = 0; i <identify_ctx->vector_num; i++) {
+-                if (identify_ctx->feature_vecs[i])
+-                    av_free(identify_ctx->feature_vecs[i]);
+-            }
+-            av_free(identify_ctx->feature_vecs);
+-        }
+-        av_free(identify_ctx);
+-    }
+-    return ret;
+-}
+-
+-static int face_identify_uninit(AVFilterContext *ctx, size_t index)
+-{
+-    int i;
+-    InferenceClassifyContext *s = ctx->priv;
+-    FaceIdentifyContext *identify_ctx = s->priv[index];
+-
+-    if (!identify_ctx) {
+-        av_log(ctx, AV_LOG_WARNING, "Empty face identify ctx.\n");
+-        return 0;
+-    }
+-
+-    if (identify_ctx->feature_vecs) {
+-        for (i = 0; i < identify_ctx->vector_num; i++)
+-            av_free(identify_ctx->feature_vecs[i]);
+-        av_free(identify_ctx->feature_vecs);
+-    }
+-
+-    if (identify_ctx->norm_std)
+-        av_free(identify_ctx->norm_std);
+-
+-    av_free(identify_ctx);
+-    s->priv[index] = NULL;
+-
+-    return 0;
+-}
+-
+-static av_cold void dump_face_id(AVFilterContext *ctx, int label_id,
+-                                 float conf, AVBufferRef *label_buf)
+-{
+-    LabelsArray *array = (LabelsArray *)label_buf->data;
+-
+-    av_log(ctx, AV_LOG_DEBUG,"CLASSIFY META - Face_id:%d Name:%s Conf:%1.2f\n",
+-           label_id, array->label[label_id], conf);
+-}
+-
+-static int face_identify_result_process(AVFilterContext *ctx,
+-                                        int detect_id,
+-                                        int result_id,
+-                                        int model_index,
+-                                        InferTensorMeta *meta,
+-                                        InferClassificationMeta *c_meta)
+-{
+-    int i, label_id = 0;
+-    InferClassification *classify;
+-    double dot_product, norm_feature, confidence, *angles;
+-    InferenceClassifyContext *s = ctx->priv;
+-    FaceIdentifyContext      *f = s->priv[model_index];
+-    double            min_angle = 180.0f;
+-    float       *feature_vector = meta->data;
+-
+-    angles = av_malloc(sizeof(double) * f->vector_num);
+-    if (!angles)
+-        return AVERROR(ENOMEM);
+-
+-    norm_feature = av_norm(feature_vector, FACE_FEATURE_VECTOR_LEN);
+-
+-    for (i = 0; i < f->vector_num; i++) {
+-        dot_product = av_dot(feature_vector,
+-                             f->feature_vecs[i],
+-                             FACE_FEATURE_VECTOR_LEN);
+-
+-        angles[i] = acos((dot_product - 0.0001f) /
+-                         (f->norm_std[i] * norm_feature)) /
+-                    PI * 180.0;
+-        if (angles[i] < s->feature_angle && angles[i] < min_angle) {
+-            label_id  = i;
+-            min_angle = angles[i];
+-        }
+-    }
+-
+-    confidence = (90.0f - min_angle) / 90.0f;
+-
+-    av_free(angles);
+-
+-    classify = av_mallocz(sizeof(*classify));
+-    if (!classify)
+-        return AVERROR(ENOMEM);
+-
+-    classify->detect_id  = detect_id;
+-    classify->name       = s->name_array[model_index];
+-    classify->label_id   = label_id;
+-    classify->confidence = (float)confidence;
+-    classify->label_buf  = av_buffer_ref(s->label_bufs[model_index]);
+-
+-    dump_face_id(ctx, label_id, confidence, s->label_bufs[model_index]);
+-
+-    av_dynarray_add(&c_meta->c_array->classifications, &c_meta->c_array->num, classify);
+-
+-    return 0;
+-}
+-
+ static int query_formats(AVFilterContext *context)
+ {
+     AVFilterFormats *formats_list;
+@@ -520,11 +334,9 @@ static av_cold int classify_init(AVFilterContext *ctx)
+ {
+     InferenceClassifyContext *s = ctx->priv;
+     int i, ret;
+-    int model_num = 0, model_proc_num = 0, label_num = 0, name_num = 0;
++    int model_num = 0, model_proc_num = 0;
+     const int max_num = MAX_MODEL_NUM;
+-    char  *names[MAX_MODEL_NUM] = { };
+     char *models[MAX_MODEL_NUM] = { };
+-    char *labels[MAX_MODEL_NUM] = { };
+     char *models_proc[MAX_MODEL_NUM] = { };
+     InferenceParam p = {};
+ 
+@@ -534,21 +346,10 @@ static av_cold int classify_init(AVFilterContext *ctx)
+     for (i = 0; i < model_num; i++)
+         av_log(ctx, AV_LOG_INFO, "model[%d]:%s\n", i, models[i]);
+ 
+-    av_split(s->labels, "&", labels, &label_num, max_num);
+-    for (i = 0; i < label_num; i++)
+-        av_log(ctx, AV_LOG_INFO, "label[%d]:%s\n", i, labels[i]);
+-
+-    av_split(s->names, "&", names, &name_num, max_num);
+-    for (i = 0; i < name_num; i++)
+-        av_log(ctx, AV_LOG_INFO, "name[%d]:%s\n", i, names[i]);
+-
+     av_split(s->model_proc, "&", models_proc, &model_proc_num, max_num);
+     for (i = 0; i < model_proc_num; i++)
+         av_log(ctx, AV_LOG_INFO, "proc[%d]:%s\n", i, models_proc[i]);
+ 
+-    // TODO: uncomment this after face reidentify use proc file
+-    // av_assert0(model_proc_num == model_num);
+-
+     av_assert0(s->backend_type == DNN_INTEL_IE);
+ 
+     p.backend_type    = s->backend_type;
+@@ -600,53 +401,11 @@ static av_cold int classify_init(AVFilterContext *ctx)
+     }
+     s->loaded_num = model_num;
+ 
+-    for (i = 0; i < label_num; i++) {
+-        int n, labels_num;
+-        AVBufferRef *ref    = NULL;
+-        LabelsArray *larray = NULL;
+-        char buffer[4096]   = { };
+-        char *_labels[100]  = { };
+-
+-        FILE *fp = fopen(labels[i], "rb");
+-        if (!fp) {
+-            av_log(ctx, AV_LOG_ERROR, "Could not open file:%s\n", labels[i]);
+-            ret = AVERROR(EIO);
+-            goto fail;
+-        }
+-
+-        n = fread(buffer, sizeof(buffer), 1, fp);
+-        fclose(fp);
+-
+-        av_split(buffer, ",", _labels, &labels_num, 100);
+-
+-        larray = av_mallocz(sizeof(*larray));
+-        if (!larray) {
+-            ret = AVERROR(ENOMEM);
+-            goto fail;
+-        }
+-
+-        for (n = 0; n < labels_num; n++) {
+-            char *l = av_strdup(_labels[n]);
+-            av_dynarray_add(&larray->label, &larray->num, l);
+-        }
+-
+-        ref = av_buffer_create((uint8_t *)larray, sizeof(*larray),
+-                               &infer_labels_buffer_free, NULL, 0);
+-        s->label_bufs[i] = ref;
+-    }
+-
+     for (i = 0; i < model_num; i++) {
+-        s->name_array[i] = names[i];
+-        if (names[i] && strstr(names[i], "face")) {
+-            s->init[i]         = &face_identify_init;
+-            s->uninit[i]       = &face_identify_uninit;
+-            s->post_process[i] = &face_identify_result_process;
+-        } else {
++        if (!models_proc[i])
++            s->post_process[i] = &default_postprocess;
++        else
+             s->post_process[i] = &commmon_postprocess;
+-        }
+-
+-        if (s->init[i] && s->init[i](ctx, i) < 0)
+-            goto fail;
+     }
+ 
+     return 0;
+@@ -654,8 +413,6 @@ static av_cold int classify_init(AVFilterContext *ctx)
+ fail:
+     for (i = 0; i < model_num; i++) {
+         ff_inference_base_free(&s->infer_bases[i]);
+-        if (s->label_bufs[i])
+-            av_buffer_unref(&s->label_bufs[i]);
+     }
+ 
+     return ret;
+@@ -667,12 +424,7 @@ static av_cold void classify_uninit(AVFilterContext *ctx)
+     InferenceClassifyContext *s = ctx->priv;
+ 
+     for (i = 0; i < s->loaded_num; i++) {
+-        if (s->uninit[i]) s->uninit[i](ctx, i);
+-
+         ff_inference_base_free(&s->infer_bases[i]);
+-
+-        av_buffer_unref(&s->label_bufs[i]);
+-
+         ff_release_model_proc(s->proc_config[i], &s->model_preproc[i], &s->model_postproc[i]);
+     }
+ }
+@@ -926,15 +678,10 @@ static const AVOption inference_classify_options[] = {
+     { "dnn_backend",    "DNN backend for model execution", OFFSET(backend_type),    AV_OPT_TYPE_FLAGS,  { .i64 = DNN_INTEL_IE },          0, 2,    FLAGS, "engine" },
+     { "model",          "path to model files for network", OFFSET(model_file),      AV_OPT_TYPE_STRING, { .str = NULL},                   0, 0,    FLAGS },
+     { "model_proc",     "model preproc and postproc",      OFFSET(model_proc),      AV_OPT_TYPE_STRING, { .str = NULL},                   0, 0,    FLAGS },
+-    { "label",          "labels for classify",             OFFSET(labels),          AV_OPT_TYPE_STRING, { .str = NULL},                   0, 0,    FLAGS },
+-    { "name",           "classify type names",             OFFSET(names),           AV_OPT_TYPE_STRING, { .str = NULL},                   0, 0,    FLAGS },
+     { "vpp_format",     "specify vpp output format",       OFFSET(vpp_format),      AV_OPT_TYPE_STRING, { .str = NULL},                   0, 0,    FLAGS },
+     { "device",         "running on device type",          OFFSET(device_type),     AV_OPT_TYPE_FLAGS,  { .i64 = DNN_TARGET_DEVICE_CPU }, 0, 12,   FLAGS },
+     { "interval",       "do infer every Nth frame",        OFFSET(every_nth_frame), AV_OPT_TYPE_INT,    { .i64 = 1 },                     1, 1024, FLAGS },
+     { "batch_size",     "batch size per infer",            OFFSET(batch_size),      AV_OPT_TYPE_INT,    { .i64 = 1 },                     1, 1024, FLAGS },
+-    { "feature_file",   "registered face feature data",    OFFSET(feature_file),    AV_OPT_TYPE_STRING, { .str = NULL},                   0,    0, FLAGS, "face_identify" },
+-    { "feature_num",    "registered face number",          OFFSET(feature_num),     AV_OPT_TYPE_INT,    { .i64 = 0},                      0, 1024, FLAGS, "face_identify" },
+-    { "identify_angle", "face identify threshold angle",   OFFSET(feature_angle),   AV_OPT_TYPE_DOUBLE, { .dbl = 70},                     0, 90,   FLAGS, "face_identify" },
+     { NULL }
+ };
+ 
+diff --git a/libavfilter/vf_inference_identify.c b/libavfilter/vf_inference_identify.c
+new file mode 100644
+index 0000000..5e676dd
+--- /dev/null
++++ b/libavfilter/vf_inference_identify.c
+@@ -0,0 +1,328 @@
++/*
++ * This file is part of FFmpeg.
++ *
++ * FFmpeg is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * FFmpeg is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with FFmpeg; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++ */
++
++/**
++ * @file
++ * dnn inference identify filter
++ */
++#include "libavutil/opt.h"
++#include "libavutil/mem.h"
++#include "libavutil/eval.h"
++#include "libavutil/avassert.h"
++#include "libavutil/avstring.h"
++#include "libavutil/pixdesc.h"
++#include "libavformat/avformat.h"
++
++#include "formats.h"
++#include "internal.h"
++#include "avfilter.h"
++
++#include "inference.h"
++
++#include <cjson/cJSON.h>
++
++#define OFFSET(x) offsetof(InferenceIdentifyContext, x)
++#define FLAGS (AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_FILTERING_PARAM)
++
++#define PI 3.1415926
++#define FACE_FEATURE_VECTOR_LEN 256
++
++typedef struct FeatureLabelPair {
++    float *feature;
++    size_t label_id;
++} FeatureLabelPair;
++
++typedef struct InferenceIdentifyContext {
++    const AVClass *class;
++
++    char   *gallery;      ///<< gallery for identify features
++    double *norm_std;
++
++    AVBufferRef *labels;
++    FeatureLabelPair **features;
++    int features_num;
++} InferenceIdentifyContext;
++
++static const char *get_filename_ext(const char *filename) {
++    const char *dot = strrchr(filename, '.');
++    if (!dot || dot == filename)
++        return NULL;
++
++    return dot + 1;
++}
++
++const char *gallery_file_suffix = "json";
++
++static void infer_labels_buffer_free(void *opaque, uint8_t *data)
++{
++    int i;
++    LabelsArray *labels = (LabelsArray *)data;
++
++    for (i = 0; i < labels->num; i++)
++        av_freep(&labels->label[i]);
++
++    av_free(data);
++}
++
++static int query_formats(AVFilterContext *context)
++{
++    AVFilterFormats *formats_list;
++    const enum AVPixelFormat pixel_formats[] = {
++        AV_PIX_FMT_YUV420P,  AV_PIX_FMT_YUV422P,  AV_PIX_FMT_YUV444P,
++        AV_PIX_FMT_YUVJ420P, AV_PIX_FMT_YUVJ422P, AV_PIX_FMT_YUVJ444P,
++        AV_PIX_FMT_YUV410P,  AV_PIX_FMT_YUV411P,  AV_PIX_FMT_GRAY8,
++        AV_PIX_FMT_BGR24,    AV_PIX_FMT_BGRA,     AV_PIX_FMT_VAAPI,
++        AV_PIX_FMT_NONE};
++
++    formats_list = ff_make_format_list(pixel_formats);
++    if (!formats_list) {
++        av_log(context, AV_LOG_ERROR, "Could not create formats list\n");
++        return AVERROR(ENOMEM);
++    }
++
++    return ff_set_common_formats(context, formats_list);
++}
++
++static av_cold int identify_init(AVFilterContext *ctx)
++{
++    size_t i, index = 1;
++    char *dup, *unknown;
++    const char *dirname;
++    cJSON *entry, *item;
++    LabelsArray *larray = NULL;
++    AVBufferRef *ref    = NULL;
++    InferenceIdentifyContext *s = ctx->priv;
++    size_t vec_size_in_bytes = sizeof(float) * FACE_FEATURE_VECTOR_LEN;
++
++    av_assert0(s->gallery);
++
++    if (strcmp(get_filename_ext(s->gallery), gallery_file_suffix)) {
++        av_log(ctx, AV_LOG_ERROR, "Face gallery '%s' is not a json file\n", s->gallery);
++        return AVERROR(EINVAL);
++    }
++
++    entry = ff_read_model_proc(s->gallery);
++    if (!entry) {
++        av_log(ctx, AV_LOG_ERROR, "Could not open gallery file:%s\n", s->gallery);
++        return AVERROR(EIO);
++    }
++
++    dup = av_strdup(s->gallery);
++    dirname = av_dirname(dup);
++
++    larray = av_mallocz(sizeof(*larray));
++    if (!larray)
++        return AVERROR(ENOMEM);
++
++    // label id 0 reserved for unknown person
++    unknown = av_strdup("Unknown_Person");
++    av_dynarray_add(&larray->label, &larray->num, unknown);
++
++    cJSON_ArrayForEach(item, entry)
++    {
++        char *l = av_strdup(item->string);
++        cJSON *features, *feature;
++
++        av_dynarray_add(&larray->label, &larray->num, l);
++
++        features = cJSON_GetObjectItem(item, "features");
++
++        cJSON_ArrayForEach(feature, features)
++        {
++            FILE *vec_fp;
++            FeatureLabelPair *pair;
++            char path[4096];
++
++            memset(path, 0, sizeof(path));
++
++            if (!cJSON_IsString(feature) || !feature->valuestring)
++                continue;
++
++            strncpy(path, dirname, strlen(dirname));
++            strncat(path, "/", 1);
++            strncat(path, feature->valuestring, strlen(feature->valuestring));
++
++            vec_fp = fopen(path, "rb");
++            if (!vec_fp) {
++                av_log(ctx, AV_LOG_ERROR, "Could not open feature file:%s\n", path);
++                continue;
++            }
++
++            pair = av_mallocz(sizeof(FeatureLabelPair));
++            if (!pair)
++                return AVERROR(ENOMEM);
++
++            pair->feature = av_malloc(vec_size_in_bytes);
++            if (!pair->feature)
++                return AVERROR(ENOMEM);
++
++            if (fread(pair->feature, vec_size_in_bytes, 1, vec_fp) != 1) {
++                av_log(ctx, AV_LOG_ERROR, "Feature vector size mismatch:%s\n", path);
++                fclose(vec_fp);
++                return AVERROR(EINVAL);
++            }
++
++            fclose(vec_fp);
++
++            pair->label_id = index;
++            av_dynarray_add(&s->features, &s->features_num, pair);
++        }
++        index++;
++    }
++
++    s->norm_std = av_mallocz(sizeof(double) * s->features_num);
++    if (!s->norm_std)
++        return AVERROR(ENOMEM);
++
++    for (i = 0; i < s->features_num; i++)
++        s->norm_std[i] = av_norm(s->features[i]->feature, FACE_FEATURE_VECTOR_LEN);
++
++    ref = av_buffer_create((uint8_t *)larray, sizeof(*larray),
++            &infer_labels_buffer_free, NULL, 0);
++
++    s->labels = ref;
++    av_free(dup);
++
++    return 0;
++}
++
++static av_cold void identify_uninit(AVFilterContext *ctx)
++{
++    int i;
++    InferenceIdentifyContext *s = ctx->priv;
++
++    av_buffer_unref(&s->labels);
++
++    for (i = 0; i < s->features_num; i++) {
++        av_freep(&s->features[i]->feature);
++        av_freep(&s->features[i]);
++    }
++    if (s->norm_std)
++        av_free(s->norm_std);
++}
++
++static av_cold void dump_face_id(AVFilterContext *ctx, int label_id,
++                                 float conf, AVBufferRef *label_buf)
++{
++    LabelsArray *array = (LabelsArray *)label_buf->data;
++
++    av_log(ctx, AV_LOG_DEBUG,"CLASSIFY META - Face_id:%d Name:%s Conf:%1.2f\n",
++           label_id, array->label[label_id], conf);
++}
++
++static int face_identify(AVFilterContext *ctx, AVFrame *frame)
++{
++    int i;
++    InferenceIdentifyContext *s = ctx->priv;
++    AVFrameSideData *side_data;
++    ClassifyArray *c_array;
++    InferClassificationMeta *meta;
++
++    side_data = av_frame_get_side_data(frame,
++            AV_FRAME_DATA_INFERENCE_CLASSIFICATION);
++
++    if (!side_data)
++        return 0;
++
++    meta = (InferClassificationMeta *)side_data->data;
++    if (!meta)
++        return 0;
++
++    c_array = meta->c_array;
++    for (i = 0; i < c_array->num; i++) {
++        int n, label = 0;
++        float *vector;
++        InferClassification *c;
++        double dot_product, norm_feature, confidence, angle;
++        double min_angle = 180.0f;
++
++        c = c_array->classifications[i];
++        vector = (float *)c->tensor_buf->data;
++        norm_feature = av_norm(vector, FACE_FEATURE_VECTOR_LEN);
++        for (n = 0; n < s->features_num; n++) {
++            dot_product = av_dot(vector, s->features[n]->feature, FACE_FEATURE_VECTOR_LEN);
++
++            angle = acos((dot_product - 0.0001f) / (s->norm_std[n] * norm_feature))
++                    /
++                    PI * 180.0;
++            if (angle < 70 && angle < min_angle) {
++                label = s->features[n]->label_id;
++                min_angle = angle;
++            }
++        }
++
++        confidence = (90.0f - min_angle) / 90.0f;
++
++        c->label_id   = label;
++        c->name       = (char *)"face_id";
++        c->confidence = (float)confidence;
++        c->label_buf  = av_buffer_ref(s->labels);
++
++        dump_face_id(ctx, label, confidence, s->labels);
++    }
++
++    return 0;
++}
++
++static int filter_frame(AVFilterLink *inlink, AVFrame *in)
++{
++    AVFilterContext *ctx  = inlink->dst;
++    AVFilterLink *outlink = inlink->dst->outputs[0];
++
++    face_identify(ctx, in);
++
++    return ff_filter_frame(outlink, in);
++}
++
++static const AVOption inference_identify_options[] = {
++    { "gallery", "JSON file with list of image examples for each known object/face/person",
++        OFFSET(gallery), AV_OPT_TYPE_STRING, { .str = NULL}, 0, 0, FLAGS },
++    { NULL }
++};
++
++AVFILTER_DEFINE_CLASS(inference_identify);
++
++static const AVFilterPad identify_inputs[] = {
++    {
++        .name          = "default",
++        .type          = AVMEDIA_TYPE_VIDEO,
++        .filter_frame  = filter_frame,
++    },
++    { NULL }
++};
++
++static const AVFilterPad identify_outputs[] = {
++    {
++        .name          = "default",
++        .type          = AVMEDIA_TYPE_VIDEO,
++    },
++    { NULL }
++};
++
++AVFilter ff_vf_inference_identify= {
++    .name          = "identify",
++    .description   = NULL_IF_CONFIG_SMALL("DNN Inference identification."),
++    .priv_size     = sizeof(InferenceIdentifyContext),
++    .query_formats = query_formats,
++    .init          = identify_init,
++    .uninit        = identify_uninit,
++    .inputs        = identify_inputs,
++    .outputs       = identify_outputs,
++    .priv_class    = &inference_identify_class,
++    .flags_internal = FF_FILTER_FLAG_HWFRAME_AWARE,
++};
+diff --git a/libavfilter/vf_inference_metaconvert.c b/libavfilter/vf_inference_metaconvert.c
+new file mode 100644
+index 0000000..89178a8
+--- /dev/null
++++ b/libavfilter/vf_inference_metaconvert.c
+@@ -0,0 +1,190 @@
++/*
++ * This file is part of FFmpeg.
++ *
++ * FFmpeg is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * FFmpeg is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with FFmpeg; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++ */
++
++/**
++ * @file
++ * dnn inference metadata convert filter
++ */
++
++#include "libavutil/opt.h"
++#include "libavutil/mem.h"
++#include "libavutil/eval.h"
++#include "libavutil/avassert.h"
++#include "libavutil/pixdesc.h"
++#include "libavutil/mathematics.h"
++
++#include "formats.h"
++#include "internal.h"
++#include "avfilter.h"
++#include "libavcodec/avcodec.h"
++#include "libavformat/avformat.h"
++
++#include "inference.h"
++#include "dnn_interface.h"
++
++#define OFFSET(x) offsetof(MetaConvertContext, x)
++#define FLAGS (AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_FILTERING_PARAM)
++
++typedef struct MetaConvertContext {
++    const AVClass *class;
++
++    char *model;
++    char *converter;
++    char *method;
++    char *location;
++    char *layer;
++
++    void (*convert_func)(AVFilterContext *ctx, AVFrame *frame);
++
++} MetaConvertContext;
++
++static int query_formats(AVFilterContext *ctx)
++{
++    AVFilterFormats *formats_list;
++    const enum AVPixelFormat pixel_formats[] = {
++        AV_PIX_FMT_YUV420P,  AV_PIX_FMT_YUV422P,  AV_PIX_FMT_YUV444P,
++        AV_PIX_FMT_YUVJ420P, AV_PIX_FMT_YUVJ422P, AV_PIX_FMT_YUVJ444P,
++        AV_PIX_FMT_YUV410P,  AV_PIX_FMT_YUV411P,  AV_PIX_FMT_GRAY8,
++        AV_PIX_FMT_BGR24,    AV_PIX_FMT_BGRA,     AV_PIX_FMT_VAAPI,
++        AV_PIX_FMT_NONE};
++
++    formats_list = ff_make_format_list(pixel_formats);
++    if (!formats_list) {
++        av_log(ctx, AV_LOG_ERROR, "Could not create formats list\n");
++        return AVERROR(ENOMEM);
++    }
++
++    return ff_set_common_formats(ctx, formats_list);
++}
++
++static av_cold void tensors_to_file(AVFilterContext *ctx, AVFrame *frame)
++{
++    AVFrameSideData *sd;
++    MetaConvertContext *s = ctx->priv;
++    InferClassificationMeta *c_meta;
++
++    static uint32_t frame_num = 0;
++
++    if (!(sd = av_frame_get_side_data(frame, AV_FRAME_DATA_INFERENCE_CLASSIFICATION)))
++        return;
++
++    c_meta = (InferClassificationMeta *)sd->data;
++
++    if (c_meta) {
++        int i;
++        uint32_t index = 0;
++        char filename[1024] = {0};
++        const int meta_num = c_meta->c_array->num;
++        for (i = 0; i < meta_num; i++) {
++            FILE *f = NULL;
++            InferClassification *c = c_meta->c_array->classifications[i];
++            //TODO:check model and layer
++            if (!c->tensor_buf || !c->tensor_buf->data)
++                continue;
++
++            snprintf(filename, sizeof(filename), "%s/%s_frame_%u_idx_%u.tensor", s->location,
++                    s->method, frame_num, index);
++            f = fopen(filename, "wb");
++            if (!f) {
++                av_log(ctx, AV_LOG_WARNING, "Failed to open/create file: %s\n", filename);
++            } else {
++                fwrite(c->tensor_buf->data, sizeof(float), c->tensor_buf->size / sizeof(float), f);
++                fclose(f);
++            }
++            index++;
++        }
++    }
++
++    frame_num++;
++}
++
++static av_cold int metaconvert_init(AVFilterContext *ctx)
++{
++    MetaConvertContext *s = ctx->priv;
++
++    if (!s->model || !s->converter || !s->method) {
++        av_log(ctx, AV_LOG_ERROR, "Missing key parameters!!\n");
++        return AVERROR(EINVAL);
++    }
++
++    av_log(ctx, AV_LOG_INFO, "\nmodel:%s\nconverter:%s\nmethod:%s\nlocation:%s\n",
++           s->model, s->converter, s->method, s->location);
++
++    if (!strcmp(s->converter, "tensors-to-file")) {
++        if (!s->location) {
++            av_log(ctx, AV_LOG_ERROR, "Missing parameters location!");
++            return AVERROR(EINVAL);
++        }
++        s->convert_func = &tensors_to_file;
++    }
++
++    return 0;
++}
++
++static int filter_frame(AVFilterLink *inlink, AVFrame *in)
++{
++    AVFilterContext *ctx  = inlink->dst;
++    MetaConvertContext *s = ctx->priv;
++    AVFilterLink *outlink = inlink->dst->outputs[0];
++
++    if (s->convert_func)
++        s->convert_func(ctx, in);
++
++    return ff_filter_frame(outlink, in);
++}
++
++static const AVOption inference_metaconvert_options[] = {
++    { "model",     "select tensor by model name", OFFSET(model),     AV_OPT_TYPE_STRING, { .str = NULL}, 0, 0, FLAGS },
++    { "layer",     "select tensor by layer name", OFFSET(layer),     AV_OPT_TYPE_STRING, { .str = NULL}, 0, 0, FLAGS },
++    { "converter", "metadata conversion group",   OFFSET(converter), AV_OPT_TYPE_STRING, { .str = NULL}, 0, 0, FLAGS },
++    { "method",    "metadata conversion method",  OFFSET(method),    AV_OPT_TYPE_STRING, { .str = NULL}, 0, 0, FLAGS },
++    { "location",  "location for output files",   OFFSET(location),  AV_OPT_TYPE_STRING, { .str = NULL}, 0, 0, FLAGS },
++
++    { NULL }
++};
++
++AVFILTER_DEFINE_CLASS(inference_metaconvert);
++
++static const AVFilterPad metaconvert_inputs[] = {
++    {
++        .name          = "default",
++        .type          = AVMEDIA_TYPE_VIDEO,
++        .filter_frame  = filter_frame,
++    },
++    { NULL }
++};
++
++static const AVFilterPad metaconvert_outputs[] = {
++    {
++        .name          = "default",
++        .type          = AVMEDIA_TYPE_VIDEO,
++    },
++    { NULL }
++};
++
++AVFilter ff_vf_inference_metaconvert = {
++    .name          = "metaconvert",
++    .description   = NULL_IF_CONFIG_SMALL("DNN Inference metaconvert."),
++    .priv_size     = sizeof(MetaConvertContext),
++    .query_formats = query_formats,
++    .init          = metaconvert_init,
++    .inputs        = metaconvert_inputs,
++    .outputs       = metaconvert_outputs,
++    .priv_class    = &inference_metaconvert_class,
++    .flags_internal = FF_FILTER_FLAG_HWFRAME_AWARE,
++};
+-- 
+2.7.4
+
