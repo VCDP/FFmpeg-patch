@@ -114,27 +114,18 @@ PROC_PATH() {
     echo ${BASEDIR}/samples/model_proc/$1.json
 }
 
-# !!!! please change to your path
-FEATURE=$MODELS_PATH/face-reid-features/vec_to_bin/registered_faces.bin
-LABEL=$MODELS_PATH/face-reid-features/face_reidentification_demo/face_gallery/labels.txt
-
-if [ ! -e $FEATURE ]; then
-echo "please change FEATURE to your path"
-exit 1
-fi
-
-if [ ! -e $LABEL ]; then
-echo "please change LABEL to your path"
-exit 1
-fi
+GALLERY=${BASEDIR}/samples/shell/reidentification/gallery/gallery.json
 
 if [ ! -z "$show" ]; then
     $BASEDIR/ffplay $debug_log -i $stream -sync video -vf "detect=model=$DETECT_MODEL_PATH:device=$D_ID1, \
-        classify=model=$CLASS_MODEL_PATH:label=$LABEL:feature_file=$FEATURE:name=face_reid:device=$D_ID2, \
+        classify=model=$CLASS_MODEL_PATH:model_proc=$(PROC_PATH $MODEL2):device=$D_ID2, \
+        identify=gallery=$GALLERY, \
         ocv_overlay"
 else
-    $BASEDIR/ffmpeg $debug_log $hw_accel \
+    #gdb --args \
+    $BASEDIR/ffmpeg_g $debug_log $hw_accel \
         -i $stream -vf "detect=model=$DETECT_MODEL_PATH:device=$D_ID1, \
-        classify=model=$CLASS_MODEL_PATH:label=$LABEL:feature_file=$FEATURE:name=face_reid:device=$D_ID2" \
+        classify=model=$CLASS_MODEL_PATH:model_proc=$(PROC_PATH $MODEL2):device=$D_ID2, \
+        identify=gallery=$GALLERY" \
         -f iemetadata -y /tmp/face-identify.json
 fi
