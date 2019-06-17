@@ -1,4 +1,4 @@
-From 4adfa24000a4d544b2d18764d002d374277d8542 Mon Sep 17 00:00:00 2001
+From 35aa74f9abf9081936fe9d55db4bcf0d9cd9e618 Mon Sep 17 00:00:00 2001
 From: Lin Xie <lin.xie@intel.com>
 Date: Mon, 10 Jun 2019 14:31:07 +0800
 Subject: [PATCH] More changes within one patch
@@ -6,14 +6,16 @@ Subject: [PATCH] More changes within one patch
 * Fix some definite memory leak
 * Change the third party library cJSON to json-c
 * Add max result count setting for detection
+* Assign default value to classify metadata name
+* Fix model proc and model mismatch crash
 ---
  configure                           |  13 ++--
  libavfilter/inference.c             | 135 ++++++++++++++++++------------------
  libavfilter/inference.h             |   2 +-
- libavfilter/vf_inference_classify.c |   6 +-
+ libavfilter/vf_inference_classify.c |  12 +++-
  libavfilter/vf_inference_detect.c   |  12 +++-
  libavfilter/vf_inference_identify.c | 104 ++++++++++++++-------------
- 6 files changed, 147 insertions(+), 125 deletions(-)
+ 6 files changed, 153 insertions(+), 125 deletions(-)
 
 diff --git a/configure b/configure
 index dcaaf95..f7feedb 100755
@@ -338,7 +340,7 @@ index 1d7971e..9f70e38 100644
  
  void ff_load_default_model_proc(ModelInputPreproc *preproc, ModelOutputPostproc *postproc);
 diff --git a/libavfilter/vf_inference_classify.c b/libavfilter/vf_inference_classify.c
-index b36a7ca..b71ee6e 100644
+index b36a7ca..f50db1e 100644
 --- a/libavfilter/vf_inference_classify.c
 +++ b/libavfilter/vf_inference_classify.c
 @@ -82,6 +82,7 @@ static void infer_classify_metadata_buffer_free(void *opaque, uint8_t *data)
@@ -349,8 +351,11 @@ index b36a7ca..b71ee6e 100644
          av_freep(&classes);
      }
  
-@@ -255,8 +256,11 @@ static int default_postprocess(AVFilterContext *ctx,
+@@ -253,10 +254,14 @@ static int default_postprocess(AVFilterContext *ctx,
+     classify->detect_id  = detect_id;
+     classify->layer_name = info->layer_name[result_id];
      classify->model      = s->model_file;
++    classify->name       = (char *)"default";
  
      classify->tensor_buf = av_buffer_alloc(meta->total_bytes);
 -    if (!classify->tensor_buf)
@@ -362,6 +367,18 @@ index b36a7ca..b71ee6e 100644
      if (meta->total_bytes > 0)
          memcpy(classify->tensor_buf->data, meta->data, meta->total_bytes);
  
+@@ -494,6 +499,11 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *in)
+             // care interested object class only
+             if (preproc && preproc->object_class && bbox->label_buf) {
+                 LabelsArray *array = (LabelsArray *)bbox->label_buf->data;
++                if (bbox->label_id >= array->num) {
++                    av_log(NULL, AV_LOG_ERROR, "The json file must match the input model\n");
++                    ret = AVERROR(ERANGE);
++                    goto fail;
++                }
+                 if (0 != strcmp(preproc->object_class, array->label[bbox->label_id]))
+                     continue;
+             }
 diff --git a/libavfilter/vf_inference_detect.c b/libavfilter/vf_inference_detect.c
 index 8b772c3..8e03595 100644
 --- a/libavfilter/vf_inference_detect.c
