@@ -1,1 +1,0 @@
-# VAAPI based patches
