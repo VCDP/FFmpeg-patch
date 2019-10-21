@@ -1,0 +1,27 @@
+{
+  "json_schema_version": 1.0,
+  "input_preproc": [
+    {
+      "color_format": "BGR",
+      "object_class": "person"
+    }
+  ],
+  "output_postproc": [
+    {
+      "layer_name": "453",
+      "attribute_name": "person-attributes",
+      "labels": [
+          "is_male ",
+          "has_bag ",
+          "has_backpack ",
+          "has_hat ",
+          "has_longsleeves ",
+          "has_longpants ",
+          "has_longhair ",
+          "has_coat_jacket"
+      ],
+      "converter": "tensor_to_label",
+      "method": "compound"
+    }
+  ]
+}

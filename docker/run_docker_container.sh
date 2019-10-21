@@ -44,11 +44,11 @@ done
 
 if [ -z "${IMAGE_NAME}" ]
 then
-    IMAGE_NAME=ffmpeg-video-analytics:latest
+    IMAGE_NAME=ffmpeg-video-analytics-package:latest
 fi
 
 xhost local:root
-docker run -it --privileged --net=host \
+sudo docker run -it --privileged --net=host \
     -v ~/.Xauthority:/root/.Xauthority \
     -v /tmp/.X11-unix/:/tmp/.X11-unix/ \
     -e DISPLAY=$DISPLAY \

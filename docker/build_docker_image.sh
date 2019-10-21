@@ -19,7 +19,7 @@ else
 fi
 
 BASEDIR=$(dirname "$0")
-sudo docker build -f ${BASEDIR}/${dockerfile} --network=host -t ffmpeg-video-analytics:$tag \
-    --build-arg http_proxy=${HTTP_PROXY} \
-    --build-arg https_proxy=${HTTPS_PROXY} \
+sudo docker build -f ${BASEDIR}/${dockerfile} --network=host -t ffmpeg-video-analytics-$build_type:$tag \
+    --build-arg http_proxy=${http_proxy} \
+    --build-arg https_proxy=${https_proxy} \
     ${BASEDIR}

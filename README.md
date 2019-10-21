@@ -31,7 +31,7 @@ GNU Lesser General Public License (LGPL) version 2.1 or later.
 * FFmpeg framework version [n4.1](https://github.com/FFmpeg/FFmpeg/releases/tag/n4.1)
 
 ## Getting Started
-* Start here: [Getting Started Guide]()
+* Start here: [Getting Started Guide](https://github.com/VCDP/FFmpeg-patch/wiki/Getting-Started-Guide)
 * [API reference](https://www.ffmpeg.org/doxygen/4.1/index.html)
 
 ## Samples
