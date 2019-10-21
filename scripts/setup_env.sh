@@ -12,7 +12,7 @@ export FFVA_SAMPLES_DIR=${FFVA_HOME}/samples
 DEFAULT_VIDEO_DIR=${FFVA_HOME}/../data/video
 export VIDEO_EXAMPLES_DIR=${VIDEO_EXAMPLES_DIR:-$DEFAULT_VIDEO_DIR}
 
-DEFAULT_MODELS_PATH=${FFVA_HOME}/../data/models/intel/
+DEFAULT_MODELS_PATH=${FFVA_HOME}/../data/models
 export MODELS_PATH=${MODELS_PATH:-$DEFAULT_MODELS_PATH}
 
 echo [setup_env.sh] FFmpeg-analytics-plugins environment initialized

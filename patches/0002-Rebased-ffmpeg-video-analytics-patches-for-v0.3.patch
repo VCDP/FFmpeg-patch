@@ -1,4 +1,4 @@
-From 5ffaa6ba962c71586b8eac018480721f401d431f Mon Sep 17 00:00:00 2001
+From f211968648f5dc49213ed69eef1e47f2b3c6fd7c Mon Sep 17 00:00:00 2001
 From: Lin Xie <lin.xie@intel.com>
 Date: Thu, 11 Jul 2019 10:38:12 +0800
 Subject: [PATCH] Rebased ffmpeg video analytics patches for v0.3
@@ -300,12 +300,12 @@ Fixed wrong frames and fps printing with some streams
 
 Change-Id: I4397d04c4fed018ce9b5590032c649b80f26cda0
 ---
- configure                                          |   28 +-
+ configure                                          |   29 +-
  fftools/ffmpeg.c                                   |   47 +-
  fftools/ffmpeg.h                                   |    1 +
  fftools/ffmpeg_opt.c                               |    7 +
- libavfilter/Makefile                               |   22 +-
- libavfilter/allfilters.c                           |    4 +-
+ libavfilter/Makefile                               |   23 +-
+ libavfilter/allfilters.c                           |    5 +-
  libavfilter/avfilter.c                             |   12 +-
  libavfilter/avfilter.h                             |   12 +
  libavfilter/avfiltergraph.c                        |   37 +
@@ -357,7 +357,7 @@ Change-Id: I4397d04c4fed018ce9b5590032c649b80f26cda0
  libavutil/log.c                                    |   11 +
  libavutil/log.h                                    |    3 +
  libswscale/utils.c                                 |    1 +
- 57 files changed, 6227 insertions(+), 2845 deletions(-)
+ 57 files changed, 6230 insertions(+), 2845 deletions(-)
  delete mode 100644 libavfilter/dnn_backend_intel_ie.c
  delete mode 100644 libavfilter/dnn_backend_intel_ie.h
  delete mode 100644 libavfilter/inference.c
@@ -396,7 +396,7 @@ Change-Id: I4397d04c4fed018ce9b5590032c649b80f26cda0
  create mode 100644 libavfilter/vf_ocv_overlay.c
 
 diff --git a/configure b/configure
-index f7feedb..671a4b4 100755
+index f7feedb..44af7be 100755
 --- a/configure
 +++ b/configure
 @@ -238,8 +238,7 @@ External library support:
@@ -457,7 +457,15 @@ index f7feedb..671a4b4 100755
  interlace_filter_deps="gpl"
  kerndeint_filter_deps="gpl"
  ladspa_filter_deps="ladspa libdl"
-@@ -6255,13 +6257,13 @@ enabled rkmpp             && { require_pkg_config rkmpp rockchip_mpp  rockchip/r
+@@ -3434,6 +3436,7 @@ negate_filter_deps="lut_filter"
+ nnedi_filter_deps="gpl"
+ ocr_filter_deps="libtesseract"
+ ocv_filter_deps="libopencv"
++ocv_overlay_filter_deps="libopencv"
+ openclsrc_filter_deps="opencl"
+ overlay_opencl_filter_deps="opencl"
+ overlay_qsv_filter_deps="libmfx"
+@@ -6255,13 +6258,13 @@ enabled rkmpp             && { require_pkg_config rkmpp rockchip_mpp  rockchip/r
                               }
  enabled vapoursynth       && require_pkg_config vapoursynth "vapoursynth-script >= 42" VSScript.h vsscript_init
  
@@ -618,7 +626,7 @@ index eda8f3e..dd1cc9c 100644
        "write program-readable progress information", "url" },
      { "stdin",          OPT_BOOL | OPT_EXPERT,                       { &stdin_interaction },
 diff --git a/libavfilter/Makefile b/libavfilter/Makefile
-index 11f0fb4..5fb2044 100644
+index 11f0fb4..c3a637e 100644
 --- a/libavfilter/Makefile
 +++ b/libavfilter/Makefile
 @@ -27,8 +27,23 @@ OBJS-$(HAVE_THREADS)                         += pthread.o
@@ -659,7 +667,15 @@ index 11f0fb4..5fb2044 100644
  OBJS-$(CONFIG_INFLATE_FILTER)                += vf_neighbor.o
  OBJS-$(CONFIG_INTERLACE_FILTER)              += vf_tinterlace.o
  OBJS-$(CONFIG_INTERLEAVE_FILTER)             += f_interleave.o
-@@ -480,6 +495,7 @@ TOOLS-$(CONFIG_LIBZMQ) += zmqsend
+@@ -297,6 +312,7 @@ OBJS-$(CONFIG_NORMALIZE_FILTER)              += vf_normalize.o
+ OBJS-$(CONFIG_NULL_FILTER)                   += vf_null.o
+ OBJS-$(CONFIG_OCR_FILTER)                    += vf_ocr.o
+ OBJS-$(CONFIG_OCV_FILTER)                    += vf_libopencv.o
++OBJS-$(CONFIG_OCV_OVERLAY_FILTER)            += vf_ocv_overlay.o
+ OBJS-$(CONFIG_OSCILLOSCOPE_FILTER)           += vf_datascope.o
+ OBJS-$(CONFIG_OVERLAY_FILTER)                += vf_overlay.o framesync.o
+ OBJS-$(CONFIG_OVERLAY_OPENCL_FILTER)         += vf_overlay_opencl.o opencl.o \
+@@ -480,6 +496,7 @@ TOOLS-$(CONFIG_LIBZMQ) += zmqsend
  
  clean::
  	$(RM) $(CLEANSUFFIXES:%=libavfilter/libmpcodecs/%)
@@ -668,7 +684,7 @@ index 11f0fb4..5fb2044 100644
  OPENCL = $(subst $(SRC_PATH)/,,$(wildcard $(SRC_PATH)/libavfilter/opencl/*.cl))
  .SECONDARY: $(OPENCL:.cl=.c)
 diff --git a/libavfilter/allfilters.c b/libavfilter/allfilters.c
-index 4588c2b..44d4110 100644
+index 4588c2b..589bbad 100644
 --- a/libavfilter/allfilters.c
 +++ b/libavfilter/allfilters.c
 @@ -244,10 +244,10 @@ extern AVFilter ff_vf_hwupload_cuda;
@@ -684,6 +700,14 @@ index 4588c2b..44d4110 100644
  extern AVFilter ff_vf_inflate;
  extern AVFilter ff_vf_interlace;
  extern AVFilter ff_vf_interleave;
+@@ -283,6 +283,7 @@ extern AVFilter ff_vf_normalize;
+ extern AVFilter ff_vf_null;
+ extern AVFilter ff_vf_ocr;
+ extern AVFilter ff_vf_ocv;
++extern AVFilter ff_vf_ocv_overlay;
+ extern AVFilter ff_vf_oscilloscope;
+ extern AVFilter ff_vf_overlay;
+ extern AVFilter ff_vf_overlay_opencl;
 diff --git a/libavfilter/avfilter.c b/libavfilter/avfilter.c
 index 2951bc4..8e3eef7 100644
 --- a/libavfilter/avfilter.c
