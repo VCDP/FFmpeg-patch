@@ -349,9 +349,21 @@ ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/intel/opencl:$HDDL_INSTALL_DIR/lib:/op
 RUN rm -rf /var/lib/apt/lists/*;
 
 # New version C API
-ARG DLDT_C_API_REPO=https://raw.githubusercontent.com/VCDP/FFmpeg-patch/master/thirdparty/dldt-c-api/source/dldt-c_api_v2-1.0.tar.gz
+## ARG DLDT_C_API_REPO=https://raw.githubusercontent.com/VCDP/FFmpeg-patch/master/thirdparty/dldt-c-api/source/dldt-c_api_v2-1.0.tar.gz
+#RUN wget -O - ${DLDT_C_API_REPO} | tar xz && \
+#    cd dldt-c_api-1.0 && \
+#    mkdir -p build && cd build && \
+#    cmake -DENABLE_AVX512F=OFF .. && \
+#    make -j8 && \
+#    make install && \
+#    make install DESTDIR=/home/build
 
-RUN wget -O - ${DLDT_C_API_REPO} | tar xz && \
+ARG FFMPEG_MA_RELEASE_VER=0.3
+ARG FFMPEG_MA_RELEASE_URL=https://github.com/VCDP/FFmpeg-patch/archive/v${FFMPEG_MA_RELEASE_VER}.tar.gz
+ARG FFMPEG_MA_PATH=/home/FFmpeg-patch-${FFMPEG_MA_RELEASE_VER}
+RUN wget -O - ${FFMPEG_MA_RELEASE_URL} | tar xz
+RUN cd ${FFMPEG_MA_PATH}/thirdparty/dldt-c-api/source && \
+    tar -zvxf dldt-c_api_v2-1.0.tar.gz && \
     cd dldt-c_api-1.0 && \
     mkdir -p build && cd build && \
     cmake -DENABLE_AVX512F=OFF .. && \
@@ -412,8 +424,7 @@ ARG FFMPEG_VA_PATCH_V03=https://raw.githubusercontent.com/VCDP/FFmpeg-patch/ffmp
 # Compile FFmpeg
 RUN wget -O - ${FFMPEG_REPO} | tar xz && mv FFmpeg-${FFMPEG_VER} FFmpeg && \
     cd FFmpeg && \
-    wget -O - ${FFMPEG_VA_PATCH_V02} | patch -p1 && \
-    wget -O - ${FFMPEG_VA_PATCH_V03} | patch -p1 && \
+    find ${FFMPEG_MA_PATH}/patches -type f -name '*.patch' -print0 | sort -z | xargs -t -0 -n 1 patch -p1 -i && \
     cp /root/patch/opencv.pc /usr/local/lib/pkgconfig/ && \
     cp /root/patch/cvdef.h /usr/local/include/opencv4/opencv2/core/cvdef.h && \
     ./configure --prefix="/usr" --libdir=/usr/lib/x86_64-linux-gnu --extra-libs="-lpthread -lm" --enable-shared --enable-gpl --enable-libass --enable-libfreetype  --enable-openssl --enable-nonfree --enable-libdrm --enable-libmfx --disable-doc --disable-htmlpages --disable-manpages --disable-podpages --disable-txtpages --enable-libfdk-aac --enable-libmp3lame --enable-libopus --enable-libvorbis --enable-libvpx --enable-libx264 --enable-libx265 --enable-libaom --enable-librdkafka --enable-libjson_c --enable-libinference_engine_c_api --enable-libopencv && \
