@@ -19,6 +19,11 @@ else
 fi
 
 BASEDIR=$(dirname "$0")
+
+# image:build
+sudo docker build --target build -f ${BASEDIR}/${dockerfile} --network=host \
+    -t "ffmpeg-video-analytics-$build_type:build" "$BASEDIR" $(env | grep -E '_(proxy|REPO|VER)=' | sed 's/^/--build-arg /')
+
 sudo docker build -f ${BASEDIR}/${dockerfile} --network=host -t ffmpeg-video-analytics-$build_type:$tag \
     --build-arg http_proxy=${http_proxy} \
     --build-arg https_proxy=${https_proxy} \
