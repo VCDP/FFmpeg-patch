@@ -5,7 +5,10 @@
 # SPDX-License-Identifier: MIT
 # ==============================================================================
 
-PATH="$HOME/bin:$PATH" PKG_CONFIG_PATH="$HOME/ffmpeg_build/lib/pkgconfig" ./configure \
+# If you use MSS install package, please add following VAR into ENV
+LIBVA_PKG_CONFIG_PATH="/opt/intel/mediasdk/lib64/pkgconfig"
+
+PATH="$HOME/bin:$PATH" PKG_CONFIG_PATH="$HOME/ffmpeg_build/lib/pkgconfig:$LIBVA_PKG_CONFIG_PATH" ./configure \
     --prefix="$HOME/ffmpeg_build" \
     --pkg-config-flags="--static" \
     --extra-cflags="-I$HOME/ffmpeg_build/include" \

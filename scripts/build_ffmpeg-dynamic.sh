@@ -5,6 +5,10 @@
 # SPDX-License-Identifier: MIT
 # ==============================================================================
 
+# If you use MSS install package, please add following VAR into ENV
+LIBVA_PKG_CONFIG_PATH="/opt/intel/mediasdk/lib64/pkgconfig"
+PKG_CONFIG_PATH="${PKG_CONFIG_PATH}:$LIBVA_PKG_CONFIG_PATH"
+
 ./configure \
     --extra-libs="-lpthread -lm" \
     --enable-shared \
