@@ -1,0 +1,16 @@
+{
+  "json_schema_version": 1.0,
+  "input_preproc": [
+    {
+      "layer_name": "0",
+      "color_format": "BGR"
+    }
+  ],
+  "output_postproc": [
+    {
+      "layer_name": "embd/dim_red/conv",
+      "attribute_name": "person_id",
+      "format": "cosine_distance"
+    }
+  ]
+}
