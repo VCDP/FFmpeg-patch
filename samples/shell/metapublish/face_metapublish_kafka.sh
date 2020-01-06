@@ -61,5 +61,5 @@ ffmpeg -i $SOURCE -vf \
     classify=model=$CLASS_MODEL_PATH:model_proc=$(PROC_PATH $MODEL2):device=$DEVICE, \
     classify=model=$CLASS_MODEL_PATH1:model_proc=$(PROC_PATH $MODEL3):device=$DEVICE, \
     metaconvert=converter=json:method=all:source=$INPUT:tags=$CUSTOM_TAG" \
-    -an -y -f metapublish -output_format stream kafka://<kafka_server_ip:port>/<topic>
+    -an -y -f metapublish -method 1 -output_format stream kafka://<kafka_server_ip:port>/<topic>
 

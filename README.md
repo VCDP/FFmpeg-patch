@@ -26,9 +26,9 @@ GNU Lesser General Public License (LGPL) version 2.1 or later.
 * On platforms with Intel Gen graphics, see the ffmpeg vaapi wiki for [Hardware Support](https://trac.ffmpeg.org/wiki/Hardware/QuickSync)
 
 ### Software
-* OpenVINO<sup>&#8482;</sup> Toolkit 2019 R2 (Inference Engine 2.0.0) or above
+* OpenVINO<sup>&#8482;</sup> Toolkit 2019 R3 (Inference Engine 2.1.0) or above
 * Linux* system with kernel 4.15 or above
-* FFmpeg framework version [n4.1](https://github.com/FFmpeg/FFmpeg/releases/tag/n4.1)
+* FFmpeg framework version [n4.2](https://github.com/FFmpeg/FFmpeg/releases/tag/n4.2)
 
 ## Getting Started
 * Start here: [Getting Started Guide](https://github.com/VCDP/FFmpeg-patch/wiki/Getting-Started-Guide)
