@@ -163,7 +163,7 @@ RUN git clone ${SVT_HEVC_REPO} && \
     cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib/x86_64-linux-gnu -DCMAKE_ASM_NASM_COMPILER=yasm ../.. && \
     make -j8 && \
     make install DESTDIR=/home/build && \
-    make install 
+    make install
 
 
 # Fetch SVT-AV1
@@ -194,7 +194,7 @@ RUN git clone ${SVT_VP9_REPO} && \
     cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_LIBDIR=lib/x86_64-linux-gnu -DCMAKE_ASM_NASM_COMPILER=yasm ../.. && \
     make -j8 && \
     make install DESTDIR=/home/build && \
-    make install 
+    make install
 
 # Fetch gmmlib
 ARG GMMLIB_VER=intel-gmmlib-18.3.0
@@ -375,43 +375,14 @@ ENV InferenceEngine_DIR=/opt/intel/dldt/inference-engine/share
 ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/intel/dldt/inference-engine/lib:/opt/intel/dldt/inference-engine/external/tbb/lib:${libdir}
 
 # New version C API
-ARG DLDT_C_API_REPO=https://raw.githubusercontent.com/VCDP/FFmpeg-patch/ffmpeg4.1_va/thirdparty/dldt-c-api/source/dldt-c_api_v2-1.0.1.tar.gz
+ARG DLDT_C_API_REPO=https://raw.githubusercontent.com/VCDP/FFmpeg-patch/ffmpeg4.2_va/thirdparty/dldt-c-api/source/v2.0.0.tar.gz
 RUN wget -O - ${DLDT_C_API_REPO} | tar xz && \
-    cd dldt-c_api-1.0 && \
+    cd dldt-c_api-2.0.0 && \
     mkdir -p build && cd build && \
     cmake -DENABLE_AVX512F=OFF .. && \
     make -j8 && \
     make install && \
     make install DESTDIR=/home/build
-
-ARG FFMPEG_MA_RELEASE_VER=0.3
-ARG FFMPEG_MA_RELEASE_URL=https://github.com/VCDP/FFmpeg-patch/archive/v${FFMPEG_MA_RELEASE_VER}.tar.gz
-ARG FFMPEG_MA_PATH=/home/FFmpeg-patch-${FFMPEG_MA_RELEASE_VER}
-RUN wget -O - ${FFMPEG_MA_RELEASE_URL} | tar xz
-#RUN cd ${FFMPEG_MA_PATH}/thirdparty/dldt-c-api/source && \
-#    tar -zvxf dldt-c_api_v2-1.0.tar.gz && \
-#    cd dldt-c_api-1.0 && \
-#    mkdir -p build && cd build && \
-#    cmake -DENABLE_AVX512F=OFF .. && \
-#    make -j8 && \
-#    make install && \
-#    make install DESTDIR=/home/build
-
-#install Model Optimizer in the DLDT for Dev
-
-
-
-# Build libjson-c
-ARG LIBJSONC_VER=0.13.1-20180305
-ARG LIBJSONC_REPO=https://github.com/json-c/json-c/archive/json-c-${LIBJSONC_VER}.tar.gz
-
-RUN wget -O - ${LIBJSONC_REPO} | tar xz && \
-    cd json-c-json-c-${LIBJSONC_VER} && \
-    sh autogen.sh && \
-    ./configure --prefix=/usr --libdir=/usr/lib/x86_64-linux-gnu && \
-    make -j8 && \
-    make install DESTDIR="/home/build" && \
-    make install;
 
 # Build librdkafka
 ARG LIBRDKAFKA_VER=0.11.6
@@ -425,8 +396,20 @@ RUN wget -O - ${LIBRDKAFKA_REPO} | tar xz && \
     make install DESTDIR=/home/build && \
     make install;
 
+# Build libjson-c
+ARG LIBJSONC_VER=0.13.1-20180305
+ARG LIBJSONC_REPO=https://github.com/json-c/json-c/archive/json-c-${LIBJSONC_VER}.tar.gz
+
+RUN wget -O - ${LIBJSONC_REPO} | tar xz && \
+    cd json-c-json-c-${LIBJSONC_VER} && \
+    sh autogen.sh && \
+    ./configure --prefix=/usr --libdir=/usr/lib/x86_64-linux-gnu && \
+    make -j8 && \
+    make install DESTDIR="/home/build" && \
+    make install;
+
 # Fetch FFmpeg source
-ARG FFMPEG_VER=n4.1
+ARG FFMPEG_VER=n4.2
 ARG FFMPEG_REPO=https://github.com/FFmpeg/FFmpeg/archive/${FFMPEG_VER}.tar.gz
 ARG FFMPEG_1TN_PATCH_REPO=https://patchwork.ffmpeg.org/patch/11625/raw
 ARG FFMPEG_THREAD_PATCH_REPO=https://patchwork.ffmpeg.org/patch/11035/raw
@@ -441,36 +424,20 @@ RUN wget -O - ${FFMPEG_PATCHES_RELEASE_URL} | tar xz
 #ARG FFMPEG_MA_PATH=/home/FFmpeg-patch-${FFMPEG_MA_RELEASE_VER}
 #RUN wget -O - ${FFMPEG_MA_RELEASE_URL} | tar xz
 
-ARG FFMPEG_VA_PATCH_V02=https://raw.githubusercontent.com/VCDP/FFmpeg-patch/ffmpeg4.1_va/patches/0001-Rebased-ffmpeg-video-analytics-patches-for-v0.2.patch
-ARG FFMPEG_VA_PATCH_V03=https://raw.githubusercontent.com/VCDP/FFmpeg-patch/ffmpeg4.1_va/patches/0002-Rebased-ffmpeg-video-analytics-patches-for-v0.3.patch
-ARG FFMPEG_VA_PATCH_0003=https://raw.githubusercontent.com/VCDP/FFmpeg-patch/ffmpeg4.1_va/patches/0003-Add-empty-filter-graph-check-for-profiling.patch
+ARG FFMPEG_VA_PATCH_V04=https://raw.githubusercontent.com/VCDP/FFmpeg-patch/ffmpeg4.2_va/patches/0001-ffmpeg-video-analytics-v0.4-release.patch
 
 RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y -q --no-install-recommends libass-dev libfreetype6-dev libvdpau-dev libsdl2-dev libxcb1-dev libxcb-shm0-dev libxcb-xfixes0-dev zlib1g-dev libssl-dev
 
-RUN wget -O - ${FFMPEG_REPO} | tar xz && mv FFmpeg-${FFMPEG_VER} FFmpeg && \
-    cd FFmpeg && \
-    find ${FFMPEG_PATCHES_PATH}/FFmpeg_patches -type f -name '0001*.patch' -print0 | sort -z | xargs -t -0 -n 1 patch -p1 -i && \
-    wget -O - ${FFMPEG_1TN_PATCH_REPO} | patch -p1 && \
-    wget -O - ${FFMPEG_THREAD_PATCH_REPO} | patch -p1 && \
-    find ${FFMPEG_MA_PATH}/patches -type f -name '*.patch' -print0 | sort -z | xargs -t -0 -n 1 patch -p1 -i && \
-    wget -O - ${FFMPEG_VA_PATCH_0003} | patch -p1
-
-
-# Patch FFmpeg source for SVT-HEVC
-RUN cd /home/FFmpeg && \
-    patch -p1 < ../SVT-HEVC/ffmpeg_plugin/0001-lavc-svt_hevc-add-libsvt-hevc-encoder-wrapper.patch;
-
-# Patch FFmpeg source for SVT-AV1
-RUN cd /home/FFmpeg; \
-    patch -p1 < ../SVT-AV1/ffmpeg_plugin/0001-Add-ability-for-ffmpeg-to-run-svt-av1-with-svt-hevc.patch;
+RUN wget -O - ${FFMPEG_REPO} | tar xz && mv FFmpeg-${FFMPEG_VER} FFmpeg
 
 ADD patch /root/patch
 
 # Compile FFmpeg
 RUN cd /home/FFmpeg && \
+    wget -O - ${FFMPEG_VA_PATCH_V04} | patch -p1 && \
     cp /root/patch/opencv.pc /usr/local/lib/pkgconfig/ && \
     cp /root/patch/cvdef.h /usr/local/include/opencv4/opencv2/core/cvdef.h && \
-    ./configure --prefix="/usr" --libdir=/usr/lib/x86_64-linux-gnu --extra-libs="-lpthread -lm" --enable-shared --enable-gpl --enable-libass --enable-libfreetype  --enable-openssl --enable-nonfree --enable-libdrm --enable-libmfx --disable-doc --disable-htmlpages --disable-manpages --disable-podpages --disable-txtpages --enable-libfdk-aac --enable-libmp3lame --enable-libopus --enable-libvorbis --enable-libvpx --enable-libx264 --enable-libx265 --enable-libaom --enable-libsvthevc --enable-libsvtav1 --enable-libinference_engine_c_api --enable-librdkafka --enable-libjson_c --enable-libopencv && \
+    ./configure --prefix="/usr" --libdir=/usr/lib/x86_64-linux-gnu --extra-libs="-lpthread -lm" --enable-shared --enable-gpl --enable-libass --enable-libfreetype  --enable-openssl --enable-nonfree --enable-libdrm --enable-libmfx --disable-doc --disable-htmlpages --disable-manpages --disable-podpages --disable-txtpages --enable-libfdk-aac --enable-libmp3lame --enable-libopus --enable-libvorbis --enable-libvpx --enable-libx264 --enable-libx265 --enable-libaom --enable-libinference_engine_c_api --enable-librdkafka --enable-libjson_c --enable-libopencv && \
     make -j8 && \
     make install DESTDIR="/home/build"
 
