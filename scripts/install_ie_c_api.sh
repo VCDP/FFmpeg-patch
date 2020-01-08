@@ -8,8 +8,11 @@
 CURDIR=$PWD
 cd /tmp/
 
-tar -zxvf $CURDIR/../thirdparty/dldt-c-api/source/dldt-c_api_v2-1.0.tar.gz && \
-    cd dldt-c_api-1.0 && \
+#make sure you have openvino built or installed
+source  /opt/intel/openvino/bin/setupvars.sh
+
+tar -zxvf $CURDIR/../thirdparty/dldt-c-api/source/v2.0.0.tar.gz && \
+    cd dldt-c_api-2.0.0 && \
     mkdir -p build && cd build && \
     cmake -DENABLE_AVX512F=OFF .. && \
     make -j8 && \
