@@ -44,10 +44,15 @@ else
   SOURCE="-i ${INPUT}"
 fi
 
+temp_file=/tmp/ffmpeg-custom-tag.json
+echo "{\"segmentation\": 10000000}" > $temp_file
+# optional
+CUSTOM_TAG="file|$temp_file"
+
 ffmpeg $SOURCE -vf \
     "detect=model=$DETECT_MODEL_PATH:model_proc=$(PROC_PATH $MODEL1):device=$DEVICE, \
     classify=model=$CLASS_MODEL_PATH:model_proc=$(PROC_PATH $MODEL2):device=$DEVICE, \
     classify=model=$CLASS_MODEL_PATH1:model_proc=$(PROC_PATH $MODEL3):device=$DEVICE, \
-    metaconvert=converter=json:method=all:source=$INPUT" \
+    metaconvert=converter=json:method=all:source=$INPUT:tags=$CUSTOM_TAG" \
     -vframes 100 \
     -an -y -f metapublish -output_format batch $OUTFILE
