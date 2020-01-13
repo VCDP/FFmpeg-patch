@@ -44,10 +44,8 @@ else
   SOURCE="-i ${INPUT}"
 fi
 
-temp_file=/tmp/ffmpeg-custom-tag.json
-echo "{\"segmentation\": 10000000}" > $temp_file
 # optional
-CUSTOM_TAG="file|$temp_file"
+CUSTOM_TAG="'{\"segmentation\"\: 10000}'"
 
 ffmpeg $SOURCE -vf \
     "detect=model=$DETECT_MODEL_PATH:model_proc=$(PROC_PATH $MODEL1):device=$DEVICE, \

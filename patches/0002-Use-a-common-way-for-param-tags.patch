@@ -1,0 +1,103 @@
+From 11c5dd52ad59aa910abf22b63d390c7d46220ed0 Mon Sep 17 00:00:00 2001
+From: Lin Xie <lin.xie@intel.com>
+Date: Mon, 13 Jan 2020 10:19:18 +0800
+Subject: [PATCH] Use a common way for param tags
+
+Change-Id: I019d28ffca9264865375fa8fc804b22345558501
+---
+ fftools/ffmpeg.c                       |  2 +-
+ libavfilter/vf_inference_metaconvert.c | 37 +++-------------------------------
+ 2 files changed, 4 insertions(+), 35 deletions(-)
+
+diff --git a/fftools/ffmpeg.c b/fftools/ffmpeg.c
+index d8d6dd5..027bd58 100755
+--- a/fftools/ffmpeg.c
++++ b/fftools/ffmpeg.c
+@@ -2452,7 +2452,7 @@ static void *filter_pipeline(void *arg)
+ #endif
+ static int send_frame_to_filters(InputStream *ist, AVFrame *decoded_frame)
+ {
+-    int i, ret;
++    int i, ret = 0;
+     AVFrame *f;
+ 
+     av_assert1(ist->nb_filters > 0); /* ensure ret is initialized */
+diff --git a/libavfilter/vf_inference_metaconvert.c b/libavfilter/vf_inference_metaconvert.c
+index 2828d4b..0d8c955 100644
+--- a/libavfilter/vf_inference_metaconvert.c
++++ b/libavfilter/vf_inference_metaconvert.c
+@@ -44,7 +44,6 @@ typedef struct MetaConvertContext {
+     char *method;
+ 
+     char *tags;
+-    char *custom_json_tag;
+     char *source;
+     char *location;
+ 
+@@ -114,8 +113,8 @@ static void add_frame_data_to_json(AVFilterContext *ctx, AVFrame *frame, json_ob
+         json_object_object_add(output_json, "source", json_object_new_string(s->source));
+ 
+     // tags
+-    if (s->custom_json_tag) {
+-        tags = json_tokener_parse(s->custom_json_tag);
++    if (s->tags) {
++        tags = json_tokener_parse(s->tags);
+         if (tags)
+             json_object_object_add(output_json, "tags", tags);
+     }
+@@ -136,33 +135,6 @@ static av_cold int metaconvert_init(AVFilterContext *ctx) {
+         return AVERROR(EINVAL);
+     }
+ 
+-    if (s->tags && strstr(s->tags, "file|")) {
+-        FILE *fp = NULL;
+-        char custom_tag_file[256] = "";
+-        if (strlen(s->tags) > 256) {
+-            av_log(ctx, AV_LOG_WARNING, "Tags length is not allow to longer than 256!\n");
+-        }
+-        sscanf(s->tags, "file|%255s", custom_tag_file);
+-        av_log(ctx, AV_LOG_INFO, "custom_tag_file:%s\n", custom_tag_file);
+-        fp = fopen(custom_tag_file, "rb");
+-        if (fp) {
+-            long size;
+-            size_t result;
+-
+-            // obtain file size:
+-            fseek(fp, 0 , SEEK_END);
+-            size = ftell(fp);
+-            rewind(fp);
+-
+-            s->custom_json_tag = (char *)av_mallocz(size + 1);
+-            av_assert0(s->custom_json_tag);
+-            result = fread(s->custom_json_tag, size, 1, fp);
+-            av_assert0(result == 1);
+-            av_log(ctx, AV_LOG_INFO, "%s\n", s->custom_json_tag);
+-            fclose(fp);
+-        }
+-    }
+-
+     // option to write metadata to json file by current filter
+     // *** NOT recommend: use metapublish instead! ***
+     if (s->location && !strcmp(s->converter, "json")) {
+@@ -188,8 +160,6 @@ static av_cold void metaconvert_uninit(AVFilterContext *ctx) {
+     MetaConvertContext *s = ctx->priv;
+     if (s->output_file)
+         fclose(s->output_file);
+-    if (s->custom_json_tag)
+-        av_freep(&s->custom_json_tag);
+ }
+ 
+ static int filter_frame(AVFilterLink *inlink, AVFrame *in) {
+@@ -232,8 +202,7 @@ static const AVOption inference_metaconvert_options[] = {
+     { "converter", "metadata conversion group",   OFFSET(converter), AV_OPT_TYPE_STRING, { .str = NULL}, 0, 0, FLAGS },
+     { "method",    "metadata conversion method",  OFFSET(method),    AV_OPT_TYPE_STRING, { .str = NULL}, 0, 0, FLAGS },
+     { "location",  "location for the output files, path to folder",   OFFSET(location),  AV_OPT_TYPE_STRING, { .str = NULL}, 0, 0, FLAGS },
+-    { "tags",      "custom tags file with format \"file|<json_file_path>\": the JSON object of custom values added to json message",
+-        OFFSET(tags),    AV_OPT_TYPE_STRING, { .str = NULL}, 0, 0, FLAGS },
++    { "tags",      "custom tags:the JSON object of custom values added to json message", OFFSET(tags), AV_OPT_TYPE_STRING, { .str = NULL}, 0, 0, FLAGS },
+     { "source",    "Source URI",  OFFSET(source),    AV_OPT_TYPE_STRING, { .str = NULL}, 0, 0, FLAGS },
+ 
+     { NULL }
+-- 
+2.7.4
+

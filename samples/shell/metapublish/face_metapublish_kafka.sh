@@ -52,14 +52,12 @@ else
   SOURCE="-i ${INPUT}"
 fi
 
-TEMP_FILE=/tmp/ffmpeg_temp
-echo "{\"segmentation\": 10000000}" > $TEMP_FILE
-CUSTOM_TAG="file|$TEMP_FILE"
+CUSTOM_TAG="'{\"segmentation\"\: 10000}'"
 
 ffmpeg -i $SOURCE -vf \
     "detect=model=$DETECT_MODEL_PATH:model_proc=$(PROC_PATH $MODEL1):device=$DEVICE, \
     classify=model=$CLASS_MODEL_PATH:model_proc=$(PROC_PATH $MODEL2):device=$DEVICE, \
     classify=model=$CLASS_MODEL_PATH1:model_proc=$(PROC_PATH $MODEL3):device=$DEVICE, \
-    metaconvert=converter=json:method=all:source=$INPUT:tags=$CUSTOM_TAG" \
+    metaconvert=converter=json:method=all:source='http\://127.0.0.1/test.mp4':tags=$CUSTOM_TAG" \
     -an -y -f metapublish -method 1 -output_format stream kafka://<kafka_server_ip:port>/<topic>
 
