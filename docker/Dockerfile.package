@@ -404,12 +404,14 @@ RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y -q --no-
 ADD patch /root/patch
 ARG FFMPEG_VER=n4.2
 ARG FFMPEG_REPO=https://github.com/FFmpeg/FFmpeg/archive/${FFMPEG_VER}.tar.gz
-ARG FFMPEG_VA_PATCH_V04=https://raw.githubusercontent.com/VCDP/FFmpeg-patch/ffmpeg4.2_va/patches/0001-ffmpeg-video-analytics-v0.4-release.patch
+ARG FFMPEG_VA_PATCH_V04_001=https://raw.githubusercontent.com/VCDP/FFmpeg-patch/ffmpeg4.2_va/patches/0001-ffmpeg-video-analytics-v0.4-release.patch
+ARG FFMPEG_VA_PATCH_V04_002=https://raw.githubusercontent.com/VCDP/FFmpeg-patch/ffmpeg4.2_va/patches/0002-Use-a-common-way-for-param-tags.patch
 
 # Compile FFmpeg
 RUN wget -O - ${FFMPEG_REPO} | tar xz && mv FFmpeg-${FFMPEG_VER} FFmpeg && \
     cd FFmpeg && \
-    wget -O - ${FFMPEG_VA_PATCH_V04} | patch -p1 && \
+    wget -O - ${FFMPEG_VA_PATCH_V04_001} | patch -p1 && \
+    wget -O - ${FFMPEG_VA_PATCH_V04_002} | patch -p1 && \
     cp /root/patch/opencv.pc /usr/local/lib/pkgconfig/ && \
     cp /root/patch/cvdef.h /usr/local/include/opencv4/opencv2/core/cvdef.h && \
     ./configure --prefix="/usr" --libdir=/usr/lib/x86_64-linux-gnu --extra-libs="-lpthread -lm" --enable-shared --enable-gpl --enable-libass --enable-libfreetype  --enable-openssl --enable-nonfree --enable-libdrm --enable-libmfx --disable-doc --disable-htmlpages --disable-manpages --disable-podpages --disable-txtpages --enable-libfdk-aac --enable-libmp3lame --enable-libopus --enable-libvorbis --enable-libvpx --enable-libx264 --enable-libx265 --enable-libaom --enable-librdkafka --enable-libjson_c --enable-libinference_engine_c_api --enable-libopencv && \
