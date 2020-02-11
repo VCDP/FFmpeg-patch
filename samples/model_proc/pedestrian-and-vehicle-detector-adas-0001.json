@@ -8,7 +8,8 @@
   "output_postproc": [
     {
       "labels": ["background","pedestrian","vehicle"],
-      "converter": "DetectionOutput"
+      "converter": "DetectionOutput",
+      "layer_name": "detection_out"
     }
   ]
 }

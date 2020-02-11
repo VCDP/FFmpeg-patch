@@ -5,6 +5,7 @@
     "json_schema_version": 1,
     "output_postproc": [{
         "converter": "DetectionOutput",
-        "labels": [ "background", "person" ]
+        "labels": [ "background", "person" ],
+        "layer_name": "detection_out"
     }]
 }
