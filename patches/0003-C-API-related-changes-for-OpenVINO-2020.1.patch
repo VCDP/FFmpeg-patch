@@ -1,0 +1,171 @@
+From d588f34b236de463610a2d115c7555bf0a48f887 Mon Sep 17 00:00:00 2001
+From: xiaoxial <xiaoxia.liang@intel.com>
+Date: Fri, 10 Jan 2020 00:59:36 +0800
+Subject: [PATCH] C API related changes for OpenVINO 2020.1
+
+* Update configure for OpenVINO IE C API wrapper
+* Adapt the OpenVINO r4 IE C API
+
+Change-Id: I973b6d885c764eee25e58249a048b525ad8e96bf
+---
+ configure                                          | 14 ++++----
+ .../inference_backend/openvino_image_inference.c   | 41 ++++------------------
+ 2 files changed, 13 insertions(+), 42 deletions(-)
+
+diff --git a/configure b/configure
+index 9cf255b..04df301 100755
+--- a/configure
++++ b/configure
+@@ -240,7 +240,7 @@ External library support:
+   --enable-libgsm          enable GSM de/encoding via libgsm [no]
+   --enable-libiec61883     enable iec61883 via libiec61883 [no]
+   --enable-libilbc         enable iLBC de/encoding via libilbc [no]
+-  --enable-libinference_engine_c_api enable dldt inference engine c api [no]
++  --enable-libinference_engine_c_wrapper enable dldt inference engine c wrapper [no]
+   --enable-libjack         enable JACK audio sound server [no]
+   --enable-libjson_c       enable libjson-c [no]
+   --enable-libklvanc       enable Kernel Labs VANC processing [no]
+@@ -1775,7 +1775,7 @@ EXTERNAL_LIBRARY_LIST="
+     libgsm
+     libiec61883
+     libilbc
+-    libinference_engine_c_api
++    libinference_engine_c_wrapper
+     libjack
+     libjson_c
+     libklvanc
+@@ -2610,7 +2610,7 @@ cbs_vp9_select="cbs"
+ dct_select="rdft"
+ dirac_parse_select="golomb"
+ dnn_suggest="libtensorflow"
+-image_inference_suggest="libinference_engine_c_api"
++image_inference_suggest="libinference_engine_c_wrapper"
+ image_inference_deps="libjson_c"
+ error_resilience_select="me_cmp"
+ faandct_deps="faan"
+@@ -3484,9 +3484,9 @@ hqdn3d_filter_deps="gpl"
+ inference_identify_filter_deps="libjson_c"
+ inference_identify_filter_select="dnn"
+ inference_metaconvert_filter_deps="libjson_c"
+-inference_classify_filter_deps="libinference_engine_c_api libjson_c"
++inference_classify_filter_deps="libinference_engine_c_wrapper libjson_c"
+ inference_classify_filter_select="image_inference"
+-inference_detect_filter_deps="libinference_engine_c_api libjson_c"
++inference_detect_filter_deps="libinference_engine_c_wrapper libjson_c"
+ inference_detect_filter_select="image_inference"
+ interlace_filter_deps="gpl"
+ kerndeint_filter_deps="gpl"
+@@ -6389,8 +6389,8 @@ enabled librdkafka  && require_pkg_config librdkafka rdkafka "librdkafka/rdkafka
+ 
+ enabled libjson_c && check_pkg_config libjson_c json-c json-c/json.h json_c_version
+ 
+-enabled libinference_engine_c_api &&
+-    require_pkg_config libinference_engine_c_api dldt_c_api "ie_c_api.h" ie_c_api_version
++enabled libinference_engine_c_wrapper &&
++    require_pkg_config libinference_engine_c_wrapper dldt_c_api "ie_c_api.h" ie_c_api_version
+ 
+ if enabled gcrypt; then
+     GCRYPT_CONFIG="${cross_prefix}libgcrypt-config"
+diff --git a/libavfilter/inference_backend/openvino_image_inference.c b/libavfilter/inference_backend/openvino_image_inference.c
+index ed77eda..e0bdd2e 100644
+--- a/libavfilter/inference_backend/openvino_image_inference.c
++++ b/libavfilter/inference_backend/openvino_image_inference.c
+@@ -38,7 +38,7 @@ static inline void* mallocz(size_t size) {
+ }
+ 
+ static ie_config_t *StringToIEConfig(const char *configs, char **pre_processor_name, char **multi_device_list,
+-                                     char **hetero_device_list, char **cpu_exetension, char**image_format) {
++                                     char **hetero_device_list, char**image_format) {
+ 
+     ie_config_t *config_res = NULL, *cfg_tmp = NULL;
+     char *key = NULL, *value = NULL, *configs_temp = NULL;
+@@ -71,11 +71,6 @@ static ie_config_t *StringToIEConfig(const char *configs, char **pre_processor_n
+             assert(list);
+             strcpy(list, value);
+             *pre_processor_name = list;
+-        } else if (!strcmp(key, "CPU_EXTENSION")) {
+-            list = (char *)mallocz(strlen(value) + 1);
+-            assert(list);
+-            strcpy(list, value);
+-            *cpu_exetension = list;
+         } else if (!strcmp(key, "IMAGE_FORMAT")) {
+             list = (char *)mallocz(strlen(value) + 1);
+             assert(list);
+@@ -326,11 +321,11 @@ static void SubmitImagePreProcess(ImageInferenceContext *ctx, const BatchRequest
+ static int OpenVINOImageInferenceCreate(ImageInferenceContext *ctx, MemoryType type, const char *devices,
+                                         const char *model, int batch_size, int nireq, const char *configs,
+                                         void *allocator, CallbackFunc callback) {
+-    int cpu_extension_needed = 0, input_num = 0;
++    size_t input_num = 0;
+     OpenVINOImageInference *vino = (OpenVINOImageInference *)ctx->priv;
+-    char *cpu_exetension = NULL, *image_format = NULL;
++    char *image_format = NULL;
+     char *pre_processor_name = NULL, *multi_device_list = NULL, *hetero_device_list = NULL;
+-    char *_devices = NULL, *weight = NULL;
++    char *_devices = NULL;
+     input_shapes_t network_input_shapes = {0};
+     ie_config_t net_config = {NULL, NULL, NULL};
+     VAII_DEBUG("Create");
+@@ -353,15 +348,10 @@ static int OpenVINOImageInferenceCreate(ImageInferenceContext *ctx, MemoryType t
+ 
+     if (configs) {
+         ie_config_t *_configs = StringToIEConfig(configs, &pre_processor_name, &multi_device_list,
+-                                                &hetero_device_list, &cpu_exetension, &image_format);
++                                                &hetero_device_list, &image_format);
+         ie_core_set_config(vino->core, _configs, devices);
+         vino->resize_by_inference = (pre_processor_name && !strcmp(pre_processor_name, "ie")) ? 1 : 0;
+ 
+-        if (multi_device_list && strstr(multi_device_list, "CPU") ||
+-            hetero_device_list && strstr(hetero_device_list, "CPU")) {
+-            cpu_extension_needed = 1;
+-        }
+-
+         if (!strcmp(devices, "MULTI")) {
+             if (multi_device_list) {
+                 _devices = (char *)malloc(strlen(devices) + strlen(multi_device_list) + 2);
+@@ -401,23 +391,8 @@ static int OpenVINOImageInferenceCreate(ImageInferenceContext *ctx, MemoryType t
+         pre_processor_name = NULL, hetero_device_list = NULL, multi_device_list = NULL;
+     }
+ 
+-    // Extension for custom layers
+-    if (cpu_extension_needed || strstr(devices, "CPU")) {
+-        ie_core_add_extension(vino->core, cpu_exetension, "CPU");
+-        VAII_DEBUG("Cpu extension loaded!");
+-        if (cpu_exetension)
+-            free(cpu_exetension);
+-        cpu_exetension = NULL;
+-    }
+-
+     // Read network
+-    weight = (char *)malloc(strlen(model) + 1);
+-    assert(weight);
+-    strncpy(weight, model, strlen(model) - 4);
+-    weight[strlen(model) - 4] = '\0';
+-    strcat(weight, ".bin");
+-    ie_network_read(model, weight, &vino->network);
+-    free(weight);
++    ie_core_read_network(vino->core, model, NULL, &vino->network);
+     if (!vino->network) {
+         VAII_ERROR("Create network failed!");
+         goto err;
+@@ -530,8 +505,6 @@ static int OpenVINOImageInferenceCreate(ImageInferenceContext *ctx, MemoryType t
+     pthread_mutex_init(&vino->count_mutex, NULL);
+     pthread_cond_init(&vino->request_processed, NULL);
+ 
+-    if (cpu_exetension)
+-        free(cpu_exetension);
+     return 0;
+ err:
+     if (pre_processor_name)
+@@ -540,8 +513,6 @@ err:
+         free(hetero_device_list);
+     if (multi_device_list)
+         free(multi_device_list);
+-    if (cpu_exetension)
+-        free(cpu_exetension);
+     if (image_format)
+         free(image_format);
+     if (_devices)
+-- 
+2.7.4
+
