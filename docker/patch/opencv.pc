@@ -1,9 +1,9 @@
 # Package Information for pkg-config
 
-prefix=/usr/local/include/opencv4/
+prefix=/usr/local
 exec_prefix=${prefix}
 libdir=${exec_prefix}/lib
-includedir_old=${prefix}/include/opencv
+includedir_old=${prefix}/include/opencv4
 includedir_new=${prefix}/include
 
 Name: OpenCV
