@@ -24,7 +24,7 @@ PATH="$HOME/bin:$PATH" PKG_CONFIG_PATH="$HOME/ffmpeg_build/lib/pkgconfig:$LIBVA_
     --enable-libx265 \
     --enable-librdkafka \
     --enable-libjson_c \
-    --enable-libinference_engine_c_api
+    --enable-libinference_engine_c_wrapper
 # appending options here to enable more third party components
 
 make -j16

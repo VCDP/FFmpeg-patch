@@ -21,7 +21,7 @@ PKG_CONFIG_PATH="${PKG_CONFIG_PATH}:$LIBVA_PKG_CONFIG_PATH"
     --enable-libx265 \
     --enable-librdkafka \
     --enable-libjson_c \
-    --enable-libinference_engine_c_api
+    --enable-libinference_engine_c_wrapper
 # appending options here to enable more third party components
 
 make -j16 && make install
