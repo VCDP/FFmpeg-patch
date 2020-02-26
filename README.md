@@ -33,6 +33,7 @@ GNU Lesser General Public License (LGPL) version 2.1 or later.
 ## Getting Started
 * Start here: [Getting Started Guide](https://github.com/VCDP/FFmpeg-patch/wiki/Getting-Started-Guide)
 * [API reference](https://www.ffmpeg.org/doxygen/4.1/index.html)
+* [OpenVisualCloud/Dockerfiles wiki](https://github.com/OpenVisualCloud/Dockerfiles/wiki)
 
 ## Samples
 See the [command-line examples](samples/shell)
