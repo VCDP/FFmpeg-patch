@@ -197,7 +197,7 @@ RUN git clone ${SVT_VP9_REPO} && \
     make install
 
 # Fetch gmmlib
-ARG GMMLIB_VER=intel-gmmlib-18.3.0
+ARG GMMLIB_VER=intel-gmmlib-19.4.1
 ARG GMMLIB_REPO=https://github.com/intel/gmmlib/archive/${GMMLIB_VER}.tar.gz
 
 RUN wget -O - ${GMMLIB_REPO} | tar xz && mv gmmlib-${GMMLIB_VER} gmmlib;
@@ -218,7 +218,7 @@ RUN wget -O - ${LIBDRM_REPO} | tar xz && \
 
 
 # Build libva
-ARG LIBVA_VER=2.4.0
+ARG LIBVA_VER=2.6.1
 ARG LIBVA_REPO=https://github.com/intel/libva/archive/${LIBVA_VER}.tar.gz
 
 RUN apt-get remove libva*
@@ -246,8 +246,8 @@ RUN wget -O - ${LIBVA_UTILS_REPO} | tar xz; \
 
 
 # Build media driver
-ARG MEDIA_DRIVER_VER=intel-media-kbl-19.1.1
-ARG MEDIA_DRIVER_REPO=https://github.com/VCDP/media-driver/archive/${MEDIA_DRIVER_VER}.tar.gz
+ARG MEDIA_DRIVER_VER=intel-media-19.4.0r
+ARG MEDIA_DRIVER_REPO=https://github.com/intel/media-driver/archive/${MEDIA_DRIVER_VER}.tar.gz
 
 RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y -q --no-install-recommends libdrm-dev libpciaccess-dev libx11-dev xorg-dev libgl1-mesa-dev
 
@@ -262,13 +262,13 @@ RUN wget -O - ${MEDIA_DRIVER_REPO} | tar xz && mv media-driver-${MEDIA_DRIVER_VE
 
 
 # Build Intel(R) Media SDK
-ARG MSDK_VER=MSS-KBL-2019-R1-HF1
+ARG MSDK_VER=MSS-KBL-2019-R1
 ARG MSDK_REPO=https://github.com/Intel-Media-SDK/MediaSDK/archive/${MSDK_VER}.tar.gz
 
 RUN wget -O - ${MSDK_REPO} | tar xz && mv MediaSDK-${MSDK_VER} MediaSDK && \
     mkdir -p MediaSDK/build && \
     cd MediaSDK/build && \
-    cmake -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_INCLUDEDIR=include -DBUILD_SAMPLES=OFF -DENABLE_OPENCL=OFF -Wno-dev .. && \
+    cmake -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_INSTALL_INCLUDEDIR=include/mfx -DBUILD_SAMPLES=OFF -DENABLE_OPENCL=OFF -Wno-dev .. && \
     make -j8 && \
     make install DESTDIR=/home/build && \
     rm -rf /home/build/usr/samples && \
@@ -279,17 +279,19 @@ RUN wget -O - ${MSDK_REPO} | tar xz && mv MediaSDK-${MSDK_VER} MediaSDK && \
 
 RUN mkdir neo
 
-RUN cd neo && wget https://github.com/intel/compute-runtime/releases/download/19.01.12103/intel-gmmlib_18.4.0.348_amd64.deb
-RUN cd neo && wget https://github.com/intel/compute-runtime/releases/download/19.01.12103/intel-igc-core_18.50.1270_amd64.deb
-RUN cd neo && wget https://github.com/intel/compute-runtime/releases/download/19.01.12103/intel-igc-opencl_18.50.1270_amd64.deb
-RUN cd neo && wget https://github.com/intel/compute-runtime/releases/download/19.01.12103/intel-opencl_19.01.12103_amd64.deb
+RUN cd neo && wget https://github.com/intel/compute-runtime/releases/download/19.41.14441/intel-gmmlib_19.3.2_amd64.deb
+RUN cd neo && wget https://github.com/intel/compute-runtime/releases/download/19.41.14441/intel-igc-core_1.0.2597_amd64.deb
+RUN cd neo && wget https://github.com/intel/compute-runtime/releases/download/19.41.14441/intel-igc-opencl_1.0.2597_amd64.deb
+RUN cd neo && wget https://github.com/intel/compute-runtime/releases/download/19.41.14441/intel-opencl_19.41.14441_amd64.deb
+RUN cd neo && wget https://github.com/intel/compute-runtime/releases/download/19.41.14441/intel-ocloc_19.41.14441_amd64.deb
 
 RUN cd neo && \
     dpkg -i *.deb && \
-    dpkg-deb -x intel-gmmlib_18.4.0.348_amd64.deb /home/build/ && \
-    dpkg-deb -x intel-igc-core_18.50.1270_amd64.deb /home/build/ && \
-    dpkg-deb -x intel-igc-opencl_18.50.1270_amd64.deb /home/build/ && \
-    dpkg-deb -x intel-opencl_19.01.12103_amd64.deb /home/build/
+    dpkg-deb -x intel-gmmlib_19.3.2_amd64.deb       /home/build/ && \
+    dpkg-deb -x intel-igc-core_1.0.2597_amd64.deb   /home/build/ && \
+    dpkg-deb -x intel-igc-opencl_1.0.2597_amd64.deb /home/build/ && \
+    dpkg-deb -x intel-opencl_19.41.14441_amd64.deb  /home/build/ && \
+    dpkg-deb -x intel-ocloc_19.41.14441_amd64.deb   /home/build/
 
 # ARGS to download specific versions of openvino, uncomment the one to download
 #R2
