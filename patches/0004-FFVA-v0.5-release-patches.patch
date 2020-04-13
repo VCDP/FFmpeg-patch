@@ -1,0 +1,2919 @@
+From 2f4fc35a57f05f9d8c74861bc3b248dba54d03f4 Mon Sep 17 00:00:00 2001
+From: "Xie, Lin" <lin.xie@intel.com>
+Date: Mon, 10 Feb 2020 22:03:02 -0800
+Subject: [PATCH] FFVA v0.5 release patches
+
+* Add a generic infer filter
+* Support faster RCNN model
+* Introduce a new filter 'python'
+* Ochestra - component latency
+* Add i420 format support
+* Release the second model input name
+* Support CSRNet
+* To use openvino official C API
+* Fix compile failed when ie c api not enabled
+---
+ configure                                     |  24 +-
+ fftools/ffmpeg.c                              |  35 ++
+ libavcodec/avcodec.h                          |   2 +
+ libavcodec/decode.c                           |   8 +
+ libavcodec/encode.c                           |   6 +
+ libavcodec/pthread_frame.c                    |   8 +
+ libavfilter/Makefile                          |  20 +-
+ libavfilter/allfilters.c                      |   2 +
+ libavfilter/avfilter.c                        |   4 +
+ libavfilter/avfilter.h                        |   2 +-
+ libavfilter/framequeue.c                      |   6 +
+ libavfilter/inference_backend/Makefile        |  17 +
+ .../inference_backend/ff_base_inference.h     |  10 +-
+ .../inference_backend/ff_inference_impl.c     | 103 ++----
+ .../inference_backend/ff_proc_factory.c       |  99 ++++-
+ .../inference_backend/image_inference.h       |   2 +-
+ .../image_inference_async_preproc.c           |  18 +-
+ libavfilter/inference_backend/metaconverter.h |   2 +-
+ libavfilter/inference_backend/model_proc.c    |  19 +-
+ libavfilter/inference_backend/model_proc.h    |   4 +-
+ .../openvino_image_inference.c                | 320 ++++++++---------
+ .../openvino_image_inference.h                |  10 +-
+ libavfilter/inference_backend/pre_proc.c      |  32 +-
+ libavfilter/inference_backend/pre_proc.h      |  10 +-
+ libavfilter/inference_backend/wrap_image.c    | 138 +++++++
+ libavfilter/inference_backend/wrap_image.h    |  27 ++
+ libavfilter/vf_inference_classify.c           |   1 -
+ libavfilter/vf_inference_detect.c             |   1 -
+ libavfilter/vf_inference_infer.c              | 337 ++++++++++++++++++
+ libavfilter/vf_inference_python.c             | 334 +++++++++++++++++
+ libavutil/frame.c                             |   5 +-
+ libavutil/frame.h                             |   4 +
+ python/ffmpeg/__init__.py                     |   7 +
+ python/ffmpeg/avutil.py                       |  15 +
+ python/ffmpeg/ffmpeg_decls.py                 | 192 ++++++++++
+ python/ffmpeg/video_frame.py                  | 122 +++++++
+ 36 files changed, 1621 insertions(+), 325 deletions(-)
+ create mode 100644 libavfilter/inference_backend/Makefile
+ create mode 100755 libavfilter/inference_backend/wrap_image.c
+ create mode 100755 libavfilter/inference_backend/wrap_image.h
+ create mode 100755 libavfilter/vf_inference_infer.c
+ create mode 100755 libavfilter/vf_inference_python.c
+ create mode 100755 python/ffmpeg/__init__.py
+ create mode 100755 python/ffmpeg/avutil.py
+ create mode 100755 python/ffmpeg/ffmpeg_decls.py
+ create mode 100755 python/ffmpeg/video_frame.py
+
+diff --git a/configure b/configure
+index 04df3016ab..785989afbd 100755
+--- a/configure
++++ b/configure
+@@ -240,7 +240,7 @@ External library support:
+   --enable-libgsm          enable GSM de/encoding via libgsm [no]
+   --enable-libiec61883     enable iec61883 via libiec61883 [no]
+   --enable-libilbc         enable iLBC de/encoding via libilbc [no]
+-  --enable-libinference_engine_c_wrapper enable dldt inference engine c wrapper [no]
++  --enable-libinference_engine_c_api enable dldt inference engine c api [no]
+   --enable-libjack         enable JACK audio sound server [no]
+   --enable-libjson_c       enable libjson-c [no]
+   --enable-libklvanc       enable Kernel Labs VANC processing [no]
+@@ -311,6 +311,7 @@ External library support:
+   --enable-openssl         enable openssl, needed for https support
+                            if gnutls, libtls or mbedtls is not used [no]
+   --enable-pocketsphinx    enable PocketSphinx, needed for asr filter [no]
++  --enable-python3         enable python3 libs, needed for inference python filter [no]
+   --disable-sndio          disable sndio support [autodetect]
+   --disable-schannel       disable SChannel SSP, needed for TLS support on
+                            Windows if openssl and gnutls are not used [autodetect]
+@@ -1775,7 +1776,7 @@ EXTERNAL_LIBRARY_LIST="
+     libgsm
+     libiec61883
+     libilbc
+-    libinference_engine_c_wrapper
++    libinference_engine_c_api
+     libjack
+     libjson_c
+     libklvanc
+@@ -1816,6 +1817,7 @@ EXTERNAL_LIBRARY_LIST="
+     openal
+     opengl
+     pocketsphinx
++    python3
+     vapoursynth
+     librdkafka
+ "
+@@ -2610,7 +2612,7 @@ cbs_vp9_select="cbs"
+ dct_select="rdft"
+ dirac_parse_select="golomb"
+ dnn_suggest="libtensorflow"
+-image_inference_suggest="libinference_engine_c_wrapper"
++image_inference_suggest="libinference_engine_c_api"
+ image_inference_deps="libjson_c"
+ error_resilience_select="me_cmp"
+ faandct_deps="faan"
+@@ -3482,12 +3484,16 @@ geq_filter_deps="gpl"
+ histeq_filter_deps="gpl"
+ hqdn3d_filter_deps="gpl"
+ inference_identify_filter_deps="libjson_c"
+-inference_identify_filter_select="dnn"
++inference_identify_filter_select="image_inference"
+ inference_metaconvert_filter_deps="libjson_c"
+-inference_classify_filter_deps="libinference_engine_c_wrapper libjson_c"
++inference_metaconvert_filter_select="image_inference"
++inference_python_filter_deps="python3"
++inference_classify_filter_deps="libinference_engine_c_api libjson_c"
+ inference_classify_filter_select="image_inference"
+-inference_detect_filter_deps="libinference_engine_c_wrapper libjson_c"
++inference_detect_filter_deps="libinference_engine_c_api libjson_c"
+ inference_detect_filter_select="image_inference"
++inference_infer_filter_deps="libinference_engine_c_api libjson_c"
++inference_infer_filter_select="image_inference"
+ interlace_filter_deps="gpl"
+ kerndeint_filter_deps="gpl"
+ ladspa_filter_deps="ladspa libdl"
+@@ -6389,8 +6395,10 @@ enabled librdkafka  && require_pkg_config librdkafka rdkafka "librdkafka/rdkafka
+ 
+ enabled libjson_c && check_pkg_config libjson_c json-c json-c/json.h json_c_version
+ 
+-enabled libinference_engine_c_wrapper &&
+-    require_pkg_config libinference_engine_c_wrapper dldt_c_api "ie_c_api.h" ie_c_api_version
++enabled python3 && require_pkg_config python3 python-3.6  Python.h Py_Initialize
++
++enabled libinference_engine_c_api &&
++    require libinference_engine_c_api c_api/ie_c_api.h ie_c_api_version -linference_engine_c_api
+ 
+ if enabled gcrypt; then
+     GCRYPT_CONFIG="${cross_prefix}libgcrypt-config"
+diff --git a/fftools/ffmpeg.c b/fftools/ffmpeg.c
+index 027bd58e40..fac0018ce7 100755
+--- a/fftools/ffmpeg.c
++++ b/fftools/ffmpeg.c
+@@ -1892,6 +1892,39 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
+         total_fps = t > 1 ? total_frames_num / (t - init_time / 1000000.0 ): 0;
+         if (total_fps > 0)
+             av_bprintf(&buf, " fps without filter init=%.2f |", total_fps);
++
++        av_bprintf(&buf, " latency(ms):");
++        for (i = 0; i < nb_input_streams; i++) {
++            InputStream *ist = input_streams[i];
++            if (ist->dec_ctx->codec_type == AVMEDIA_TYPE_VIDEO && ist->frames_decoded) {
++                av_bprintf(&buf, " dec_%s=%.2f ", ist->dec_ctx->codec->name,
++                        (ist->dec_ctx->decode_latency / 1000.0) / ist->frames_decoded);
++            }
++        }
++
++        for (i = 0; i < nb_filtergraphs; i++) {
++            FilterGraph *fg = filtergraphs[i];
++            if (!fg || !fg->graph)
++                continue;
++            for (int j = 0; j < fg->graph->nb_filters; j++) {
++                AVFilterContext *ft = fg->graph->filters[j];
++                if (!ft || !ft->outputs)
++                    continue;
++                if (ft->outputs[0]->frame_count_in && strncmp(ft->name, "Parsed", 6) == 0) {
++                    float lt = (ft->filter_latency / 1000.0) / (ft->outputs[0]->frame_count_in);
++                    if (lt != 0)
++                        av_bprintf(&buf, " %s=%.2f ", &ft->name[7], lt);
++                }
++            }
++        }
++        for (i = 0; i < nb_output_streams; i++) {
++            OutputStream *ost = output_streams[i];
++            if (ost->enc_ctx->codec_type == AVMEDIA_TYPE_VIDEO && ost->enc_ctx->frame_number > 1) {
++                av_bprintf(&buf, "enc_%s=%.2f ", ost->enc_ctx->codec->name,
++                        (ost->enc_ctx->encode_latency / 1000.0) / ost->enc_ctx->frame_number);
++            }
++        }
++        av_bprintf(&buf, "|");
+     }
+ 
+     secs = FFABS(pts) / AV_TIME_BASE;
+@@ -2713,6 +2746,8 @@ static int decode_video(InputStream *ist, AVPacket *pkt, int *got_output, int64_
+     if (ist->st->sample_aspect_ratio.num)
+         decoded_frame->sample_aspect_ratio = ist->st->sample_aspect_ratio;
+ 
++    if (do_profiling_all)
++        ist->dec_ctx->decode_latency += decoded_frame->tm_out - decoded_frame->tm_in;
+     err = send_frame_to_filters(ist, decoded_frame);
+ 
+ fail:
+diff --git a/libavcodec/avcodec.h b/libavcodec/avcodec.h
+index d234271c5b..f0b36d77ef 100644
+--- a/libavcodec/avcodec.h
++++ b/libavcodec/avcodec.h
+@@ -3370,6 +3370,8 @@ typedef struct AVCodecContext {
+      * - encoding: unused
+      */
+     int discard_damaged_percentage;
++
++    uint64_t decode_latency, encode_latency;
+ } AVCodecContext;
+ 
+ #if FF_API_CODEC_GET_SET
+diff --git a/libavcodec/decode.c b/libavcodec/decode.c
+index 6c31166ec2..3f155fcce0 100644
+--- a/libavcodec/decode.c
++++ b/libavcodec/decode.c
+@@ -37,6 +37,7 @@
+ #include "libavutil/internal.h"
+ #include "libavutil/intmath.h"
+ #include "libavutil/opt.h"
++#include "libavutil/time.h"
+ 
+ #include "avcodec.h"
+ #include "bytestream.h"
+@@ -407,6 +408,7 @@ static int decode_simple_internal(AVCodecContext *avctx, AVFrame *frame)
+     // copy to ensure we do not change pkt
+     int got_frame, actual_got_frame;
+     int ret;
++    uint64_t tm_start;
+ 
+     if (!pkt->data && !avci->draining) {
+         av_packet_unref(pkt);
+@@ -430,7 +432,13 @@ static int decode_simple_internal(AVCodecContext *avctx, AVFrame *frame)
+     if (HAVE_THREADS && avctx->active_thread_type & FF_THREAD_FRAME) {
+         ret = ff_thread_decode_frame(avctx, frame, &got_frame, pkt);
+     } else {
++        if (av_profiling_get())
++            tm_start = av_gettime();
+         ret = avctx->codec->decode(avctx, frame, &got_frame, pkt);
++        if (av_profiling_get() && got_frame && frame) {
++            frame->tm_in = tm_start;
++            frame->tm_out = av_gettime();
++        }
+ 
+         if (!(avctx->codec->caps_internal & FF_CODEC_CAP_SETS_PKT_DTS))
+             frame->pkt_dts = pkt->dts;
+diff --git a/libavcodec/encode.c b/libavcodec/encode.c
+index d12c42526b..4e81694d17 100644
+--- a/libavcodec/encode.c
++++ b/libavcodec/encode.c
+@@ -24,6 +24,7 @@
+ #include "libavutil/imgutils.h"
+ #include "libavutil/internal.h"
+ #include "libavutil/samplefmt.h"
++#include "libavutil/time.h"
+ 
+ #include "avcodec.h"
+ #include "frame_thread_encoder.h"
+@@ -263,6 +264,7 @@ int attribute_align_arg avcodec_encode_video2(AVCodecContext *avctx,
+     int ret;
+     AVPacket user_pkt = *avpkt;
+     int needs_realloc = !user_pkt.data;
++    uint64_t tm_start;
+ 
+     *got_packet_ptr = 0;
+ 
+@@ -293,7 +295,11 @@ int attribute_align_arg avcodec_encode_video2(AVCodecContext *avctx,
+ 
+     av_assert0(avctx->codec->encode2);
+ 
++    if (av_profiling_get())
++        tm_start = av_gettime();
+     ret = avctx->codec->encode2(avctx, avpkt, frame, got_packet_ptr);
++    if (av_profiling_get())
++        avctx->encode_latency += av_gettime() - tm_start;
+     av_assert0(ret <= 0);
+ 
+     emms_c();
+diff --git a/libavcodec/pthread_frame.c b/libavcodec/pthread_frame.c
+index 36ac0ac1e5..9919c5ac38 100644
+--- a/libavcodec/pthread_frame.c
++++ b/libavcodec/pthread_frame.c
+@@ -44,6 +44,7 @@
+ #include "libavutil/mem.h"
+ #include "libavutil/opt.h"
+ #include "libavutil/thread.h"
++#include "libavutil/time.h"
+ 
+ enum {
+     ///< Set when the thread is awaiting a packet.
+@@ -170,6 +171,7 @@ static attribute_align_arg void *frame_worker_thread(void *arg)
+     PerThreadContext *p = arg;
+     AVCodecContext *avctx = p->avctx;
+     const AVCodec *codec = avctx->codec;
++    uint64_t tm_start;
+ 
+     pthread_mutex_lock(&p->mutex);
+     while (1) {
+@@ -198,6 +200,8 @@ static attribute_align_arg void *frame_worker_thread(void *arg)
+ 
+         av_frame_unref(p->frame);
+         p->got_frame = 0;
++        if (av_profiling_get())
++            tm_start = av_gettime();
+         p->result = codec->decode(avctx, p->frame, &p->got_frame, &p->avpkt);
+ 
+         if ((p->result < 0 || !p->got_frame) && p->frame->buf[0]) {
+@@ -226,6 +230,10 @@ static attribute_align_arg void *frame_worker_thread(void *arg)
+         atomic_store(&p->state, STATE_INPUT_READY);
+ 
+         pthread_cond_broadcast(&p->progress_cond);
++        if (av_profiling_get()) {
++            p->frame->tm_in = tm_start;
++            p->frame->tm_out = av_gettime();
++        }
+         pthread_cond_signal(&p->output_cond);
+         pthread_mutex_unlock(&p->progress_mutex);
+     }
+diff --git a/libavfilter/Makefile b/libavfilter/Makefile
+index 0ce29b0c3a..5a1339302d 100755
+--- a/libavfilter/Makefile
++++ b/libavfilter/Makefile
+@@ -29,22 +29,8 @@ OBJS-$(CONFIG_QSVVPP)                        += qsvvpp.o
+ DNN-OBJS-$(CONFIG_LIBTENSORFLOW)             += dnn_backend_tf.o
+ OBJS-$(CONFIG_DNN)                           += dnn_interface.o dnn_backend_native.o $(DNN-OBJS-yes)
+ OBJS-$(CONFIG_SCENE_SAD)                     += scene_sad.o
+-OBJS-$(CONFIG_IMAGE_INFERENCE)               += inference_backend/ff_base_inference.o             \
+-                                                inference_backend/ff_inference_impl.o             \
+-                                                inference_backend/ff_list.o                       \
+-                                                inference_backend/ff_proc_factory.o               \
+-                                                inference_backend/image.o                         \
+-                                                inference_backend/image_inference.o               \
+-                                                inference_backend/image_inference_async_preproc.o \
+-                                                inference_backend/logger.o                        \
+-                                                inference_backend/model_proc.o                    \
+-                                                inference_backend/openvino_image_inference.o      \
+-                                                inference_backend/pre_proc.o                      \
+-                                                inference_backend/pre_proc_mocker.o               \
+-                                                inference_backend/pre_proc_swscale.o              \
+-                                                inference_backend/pre_proc_vaapi.o                \
+-                                                inference_backend/safe_queue.o                    \
+-                                                inference_backend/metaconverter.o                 \
++
++include $(SRC_PATH)/libavfilter/inference_backend/Makefile
+ 
+ # audio filters
+ OBJS-$(CONFIG_ABENCH_FILTER)                 += f_bench.o
+@@ -287,8 +273,10 @@ OBJS-$(CONFIG_IDET_FILTER)                   += vf_idet.o
+ OBJS-$(CONFIG_IL_FILTER)                     += vf_il.o
+ OBJS-$(CONFIG_INFERENCE_IDENTIFY_FILTER)     += vf_inference_identify.o
+ OBJS-$(CONFIG_INFERENCE_METACONVERT_FILTER)  += vf_inference_metaconvert.o
++OBJS-$(CONFIG_INFERENCE_PYTHON_FILTER)       += vf_inference_python.o
+ OBJS-$(CONFIG_INFERENCE_CLASSIFY_FILTER)     += vf_inference_classify.o
+ OBJS-$(CONFIG_INFERENCE_DETECT_FILTER)       += vf_inference_detect.o
++OBJS-$(CONFIG_INFERENCE_INFER_FILTER)        += vf_inference_infer.o
+ OBJS-$(CONFIG_INFLATE_FILTER)                += vf_neighbor.o
+ OBJS-$(CONFIG_INTERLACE_FILTER)              += vf_tinterlace.o
+ OBJS-$(CONFIG_INTERLEAVE_FILTER)             += f_interleave.o
+diff --git a/libavfilter/allfilters.c b/libavfilter/allfilters.c
+index 31abaf39d2..e96e771729 100755
+--- a/libavfilter/allfilters.c
++++ b/libavfilter/allfilters.c
+@@ -256,8 +256,10 @@ extern AVFilter ff_vf_idet;
+ extern AVFilter ff_vf_il;
+ extern AVFilter ff_vf_inference_identify;
+ extern AVFilter ff_vf_inference_metaconvert;
++extern AVFilter ff_vf_inference_python;
+ extern AVFilter ff_vf_inference_classify;
+ extern AVFilter ff_vf_inference_detect;
++extern AVFilter ff_vf_inference_infer;
+ extern AVFilter ff_vf_inflate;
+ extern AVFilter ff_vf_interlace;
+ extern AVFilter ff_vf_interleave;
+diff --git a/libavfilter/avfilter.c b/libavfilter/avfilter.c
+index 8d8a42c67c..a27489d08d 100755
+--- a/libavfilter/avfilter.c
++++ b/libavfilter/avfilter.c
+@@ -1133,6 +1133,10 @@ int ff_filter_frame(AVFilterLink *link, AVFrame *frame)
+         av_frame_free(&frame);
+         return ret;
+     }
++    if (av_profiling_get()) {
++        if (frame->tm_in != 0 && ((frame->width && frame->height) || !frame->nb_samples))
++            link->src->filter_latency += frame->tm_out - frame->tm_in;
++    }
+     ff_filter_set_ready(link->dst, 300);
+     return 0;
+ 
+diff --git a/libavfilter/avfilter.h b/libavfilter/avfilter.h
+index 7545883367..7abb7c29d3 100755
+--- a/libavfilter/avfilter.h
++++ b/libavfilter/avfilter.h
+@@ -423,7 +423,7 @@ struct AVFilterContext {
+      */
+     int extra_hw_frames;
+ 
+-    int64_t last_tm, init_working_time, sum_working_time;
++    uint64_t last_tm, init_working_time, sum_working_time, filter_latency;
+ };
+ 
+ /**
+diff --git a/libavfilter/framequeue.c b/libavfilter/framequeue.c
+index fed1118975..4b37d14cc9 100644
+--- a/libavfilter/framequeue.c
++++ b/libavfilter/framequeue.c
+@@ -21,6 +21,7 @@
+ 
+ #include "libavutil/avassert.h"
+ #include "framequeue.h"
++#include "libavutil/time.h"
+ 
+ static inline FFFrameBucket *bucket(FFFrameQueue *fq, size_t idx)
+ {
+@@ -86,8 +87,11 @@ int ff_framequeue_add(FFFrameQueue *fq, AVFrame *frame)
+             fq->allocated = na;
+         }
+     }
++    if (av_profiling_get() && frame)
++        frame->tm_out = av_gettime();
+     b = bucket(fq, fq->queued);
+     b->frame = frame;
++
+     fq->queued++;
+     fq->total_frames_head++;
+     fq->total_samples_head += frame->nb_samples;
+@@ -109,6 +113,8 @@ AVFrame *ff_framequeue_take(FFFrameQueue *fq)
+     fq->total_samples_tail += b->frame->nb_samples;
+     fq->samples_skipped = 0;
+     check_consistency(fq);
++    if (av_profiling_get())
++        b->frame->tm_in = av_gettime();
+     return b->frame;
+ }
+ 
+diff --git a/libavfilter/inference_backend/Makefile b/libavfilter/inference_backend/Makefile
+new file mode 100644
+index 0000000000..66be537875
+--- /dev/null
++++ b/libavfilter/inference_backend/Makefile
+@@ -0,0 +1,17 @@
++OBJS-$(CONFIG_IMAGE_INFERENCE)               += inference_backend/ff_base_inference.o             \
++                                                inference_backend/ff_inference_impl.o             \
++                                                inference_backend/ff_list.o                       \
++                                                inference_backend/ff_proc_factory.o               \
++                                                inference_backend/image.o                         \
++                                                inference_backend/image_inference.o               \
++                                                inference_backend/image_inference_async_preproc.o \
++                                                inference_backend/logger.o                        \
++                                                inference_backend/model_proc.o                    \
++                                                inference_backend/openvino_image_inference.o      \
++                                                inference_backend/pre_proc.o                      \
++                                                inference_backend/pre_proc_mocker.o               \
++                                                inference_backend/pre_proc_swscale.o              \
++                                                inference_backend/pre_proc_vaapi.o                \
++                                                inference_backend/safe_queue.o                    \
++                                                inference_backend/metaconverter.o                 \
++                                                inference_backend/wrap_image.o                    \
+diff --git a/libavfilter/inference_backend/ff_base_inference.h b/libavfilter/inference_backend/ff_base_inference.h
+index c1cbf7e249..30101275eb 100644
+--- a/libavfilter/inference_backend/ff_base_inference.h
++++ b/libavfilter/inference_backend/ff_base_inference.h
+@@ -61,7 +61,6 @@ typedef struct __ModelOutputPostproc ModelOutputPostproc;
+ 
+ #define FF_INFERENCE_OPTIONS                                                                                           \
+     char *model;                                                                                                       \
+-    char *object_class;                                                                                                \
+     char *model_proc;                                                                                                  \
+     char *device;                                                                                                      \
+     int batch_size;                                                                                                    \
+@@ -181,6 +180,15 @@ typedef struct _InferDetectionMeta {
+     BBoxesArray *bboxes;
+ } InferDetectionMeta;
+ 
++typedef struct _TensorsArray {
++    IETensorMeta **tensors;
++    int num;
++} TensorsArray;
++
++typedef struct _InferTensorMeta {
++    TensorsArray *t_array;
++} InferTensorMeta;
++
+ typedef struct __InferenceROI {
+     AVFrame *frame;
+     FFVideoRegionOfInterestMeta roi;
+diff --git a/libavfilter/inference_backend/ff_inference_impl.c b/libavfilter/inference_backend/ff_inference_impl.c
+index 5a0e91808b..90b19dd8fa 100644
+--- a/libavfilter/inference_backend/ff_inference_impl.c
++++ b/libavfilter/inference_backend/ff_inference_impl.c
+@@ -37,10 +37,8 @@ typedef enum {
+ 
+ typedef struct __Model {
+     const char *name;
+-    char *object_class;
+     ImageInferenceContext *infer_ctx;
+     FFInferenceImpl *infer_impl;
+-    // std::map<std::string, void *> proc;
+     void *input_preproc;
+ 
+     void *proc_config;
+@@ -79,41 +77,6 @@ struct __FFInferenceImpl {
+     ff_list_t *processed_frames; // TODO: consider remove it if all output frames can be consumed instantly
+ };
+ 
+-static void SplitString(char *str, const char *delim, char **array, int *num, int max) {
+-    char *p;
+-    int i = 0;
+-
+-    if (!str || !delim || !array || !num)
+-        return;
+-
+-    while (p = strtok(str, delim)) {
+-        int j = 0;
+-        char *s;
+-        size_t end;
+-
+-        /* remove head blanks */
+-        while (p[j] == '\n' || p[j] == ' ')
+-            j++;
+-
+-        if (!p[j])
+-            continue;
+-
+-        /* remove tail blanks */
+-        s = p + j;
+-        end = strlen(s) - 1;
+-        while (s[end] == '\n' || s[end] == ' ')
+-            s[end--] = '\0';
+-
+-        array[i++] = s;
+-        av_assert0(i < max);
+-
+-        /* string is cached */
+-        str = NULL;
+-    }
+-
+-    *num = i;
+-}
+-
+ static inline int avFormatToFourCC(int format) {
+     switch (format) {
+     case AV_PIX_FMT_NV12:
+@@ -259,19 +222,13 @@ static int ConfigPreProc(FFBaseInference *base, FFInferenceImpl *impl) {
+ 
+     // Create async pre_proc image inference backend
+     if (base->param.opaque) {
+-        PreProcContext *preproc_ctx = NULL;
+         ImageInferenceContext *async_preproc_ctx = NULL;
+-
+         const ImageInference *inference = image_inference_get_by_name("async_preproc");
+         async_preproc_ctx = image_inference_alloc(inference, NULL, "async-preproc-infer");
+-        if (base->param.vpp_device == VPP_DEVICE_HW)
+-            preproc_ctx = pre_proc_alloc(pre_proc_get_by_name("vaapi"));
+-        else
+-            preproc_ctx = pre_proc_alloc(pre_proc_get_by_name("mocker"));
+ 
+-        av_assert0(async_preproc_ctx && preproc_ctx);
++        av_assert0(async_preproc_ctx);
+ 
+-        async_preproc_ctx->inference->CreateAsyncPreproc(async_preproc_ctx, context, preproc_ctx, 6,
++        async_preproc_ctx->inference->CreateAsyncPreproc(async_preproc_ctx, context, 6, base->param.vpp_device,
+                                                          base->param.opaque);
+ 
+         // substitute for opevino image inference
+@@ -284,8 +241,27 @@ static int ConfigPreProc(FFBaseInference *base, FFInferenceImpl *impl) {
+     return 0;
+ }
+ 
+-static Model *CreateModel(FFBaseInference *base, const char *model_file, const char *model_proc_path,
+-                          const char *object_class) {
++static void *ParseModelProc(Model *model, const char *model_proc_path) {
++    void *proc = model_proc_read_config_file(model_proc_path);
++    if (!proc) {
++        VAII_LOGE("Could not read proc config file:"
++                  "%s\n",
++                  model_proc_path);
++        av_assert0(proc);
++    }
++
++    if (model_proc_parse_input_preproc(proc, &model->model_preproc) < 0) {
++        VAII_WARNING("Parse input preproc error.\n");
++    }
++
++    if (model_proc_parse_output_postproc(proc, &model->model_postproc) < 0) {
++        VAII_WARNING("Parse output postproc error.\n");
++    }
++
++    return proc;
++}
++
++static Model *CreateModel(FFBaseInference *base, const char *model_file, const char *model_proc_path) {
+     int ret = 0;
+     Model *model = NULL;
+     const ImageInference *inference = image_inference_get_by_name("openvino");
+@@ -300,23 +276,7 @@ static Model *CreateModel(FFBaseInference *base, const char *model_file, const c
+     av_assert0(context && model);
+ 
+     if (model_proc_path) {
+-        void *proc = model_proc_read_config_file(model_proc_path);
+-        if (!proc) {
+-            VAII_LOGE("Could not read proc config file:"
+-                   "%s\n",
+-                   model_proc_path);
+-            av_assert0(proc);
+-        }
+-
+-        if (model_proc_parse_input_preproc(proc, &model->model_preproc) < 0) {
+-            VAII_ERROR("Parse input preproc error.\n");
+-        }
+-
+-        if (model_proc_parse_output_postproc(proc, &model->model_postproc) < 0) {
+-            VAII_ERROR("Parse output postproc error.\n");
+-        }
+-
+-        model->proc_config = proc;
++        model->proc_config = ParseModelProc(model, model_proc_path);
+     }
+ 
+     ret = context->inference->Create(context, MEM_TYPE_ANY, base->param.device, model_file, base->param.batch_size,
+@@ -325,7 +285,6 @@ static Model *CreateModel(FFBaseInference *base, const char *model_file, const c
+ 
+     model->infer_ctx = context;
+     model->name = context->inference->GetModelName(context);
+-    model->object_class = object_class ? av_strdup(object_class) : NULL;
+     model->input_preproc = NULL;
+ 
+     return model;
+@@ -342,8 +301,6 @@ static void ReleaseModel(Model *model) {
+ 
+     model_proc_release_model_proc(model->proc_config, &model->model_preproc, &model->model_postproc);
+ 
+-    if (model->object_class)
+-        av_free(model->object_class);
+     av_free(model);
+ }
+ 
+@@ -396,8 +353,8 @@ FFInferenceImpl *FFInferenceImplCreate(FFBaseInference *ff_base_inference) {
+ 
+     av_assert0(impl && ff_base_inference && ff_base_inference->param.model);
+ 
+-    dnn_model = CreateModel(ff_base_inference, ff_base_inference->param.model, ff_base_inference->param.model_proc,
+-                            ff_base_inference->param.object_class);
++    dnn_model = CreateModel(ff_base_inference, ff_base_inference->param.model, ff_base_inference->param.model_proc);
++
+     dnn_model->infer_impl = impl;
+ 
+     impl->model = dnn_model;
+@@ -414,9 +371,11 @@ FFInferenceImpl *FFInferenceImplCreate(FFBaseInference *ff_base_inference) {
+ }
+ 
+ int FFInferenceImplSetParams(FFBaseInference *ff_base_inference) {
+-    av_assert0(ff_base_inference);
+-    FFInferenceImpl *impl = (FFInferenceImpl *)ff_base_inference->inference;
+-    av_assert0(impl);
++    FFInferenceImpl *impl;
++
++    av_assert0(ff_base_inference && ff_base_inference->inference);
++
++    impl = (FFInferenceImpl *)ff_base_inference->inference;
+ 
+     // here currently mainly about preproc
+     ConfigPreProc(ff_base_inference, impl);
+diff --git a/libavfilter/inference_backend/ff_proc_factory.c b/libavfilter/inference_backend/ff_proc_factory.c
+index ded8a5bc88..2fd140c7b5 100755
+--- a/libavfilter/inference_backend/ff_proc_factory.c
++++ b/libavfilter/inference_backend/ff_proc_factory.c
+@@ -30,6 +30,7 @@ struct _precision {
+     IEPrecision value;
+     const char *str;
+ };
++
+ static struct _precision precision_table[] = {
+     ENUM_STRING_PAIR(FP32),
+     ENUM_STRING_PAIR(U8),
+@@ -39,6 +40,7 @@ struct _layout {
+     IELayout value;
+     const char *str;
+ };
++
+ static struct _layout layout_table[] = {
+     ENUM_STRING_PAIR(ANY),
+     ENUM_STRING_PAIR(NCHW),
+@@ -103,6 +105,25 @@ static void infer_classify_metadata_buffer_free(void *opaque, uint8_t *data) {
+     av_free(data);
+ }
+ 
++static void infer_tensor_metadata_buffer_free(void *opaque, uint8_t *data) {
++    TensorsArray *t_array = ((InferTensorMeta *)data)->t_array;
++
++    if (t_array) {
++        int i;
++        for (i = 0; i < t_array->num; i++) {
++            IETensorMeta *p = t_array->tensors[i];
++            av_buffer_unref(&p->buffer);
++            if (p->layer_name)
++                av_freep(&p->layer_name);
++            av_freep(&p);
++        }
++        av_free(t_array->tensors);
++        av_freep(&t_array);
++    }
++
++    av_free(data);
++}
++
+ static inline void enhanced_face_bounding_box(FFVideoRegionOfInterestMeta *roi) {
+     const float bb_enlarge_coefficient = 1.2;
+     const float bb_dx_coefficient = 1.0;
+@@ -133,8 +154,9 @@ static void inline fill_tensor_metadata(IETensorMeta *tensor, const char *layer_
+     tensor->precision = get_precision_string(precision);
+     tensor->layout = get_layout_string(layout);
+     tensor->ranks = ranks;
+-    for (int i = 0; i < ranks; i++)
++    for (int i = 0; i < ranks; i++) {
+         tensor->dims[i] = dims[i];
++    }
+     tensor->layer_name = strdup(layer_name);
+     tensor->model_name = model_name;
+     if (data) {
+@@ -407,9 +429,9 @@ static void ExtractYOLOV3BoundingBoxes(const OutputBlobArray *blob_array, Infere
+     av_free(obj_array.objects);
+ }
+ 
+-static void ExtractBoundingBoxes(const OutputBlobArray *blob_array, InferenceROIArray *infer_roi_array,
+-                                 ModelOutputPostproc *model_postproc, const char *model_name,
+-                                 const FFBaseInference *ff_base_inference) {
++static void ExtractSSDBoundingBoxes(const OutputBlobArray *blob_array, InferenceROIArray *infer_roi_array,
++                                    ModelOutputPostproc *model_postproc, const char *model_name,
++                                    const FFBaseInference *ff_base_inference) {
+     for (int n = 0; n < blob_array->num_blobs; n++) {
+         AVBufferRef *labels = NULL;
+         BBoxesArray **boxes = NULL;
+@@ -689,9 +711,9 @@ static int tensor_to_text(FFVideoRegionOfInterestMeta *meta, OutputPostproc *pos
+     return 0;
+ }
+ 
+-static void Blob2RoiMeta(const OutputBlobArray *blob_array, InferenceROIArray *infer_roi_array,
+-                         ModelOutputPostproc *model_postproc, const char *model_name,
+-                         const FFBaseInference *ff_base_inference) {
++static void ExtractClassifyResults(const OutputBlobArray *blob_array, InferenceROIArray *infer_roi_array,
++                                   ModelOutputPostproc *model_postproc, const char *model_name,
++                                   const FFBaseInference *ff_base_inference) {
+     int batch_size = infer_roi_array->num_infer_ROIs;
+ 
+     for (int n = 0; n < blob_array->num_blobs; n++) {
+@@ -772,6 +794,63 @@ static void Blob2RoiMeta(const OutputBlobArray *blob_array, InferenceROIArray *i
+     }
+ }
+ 
++static void ExtractInferResults(const OutputBlobArray *blob_array, InferenceROIArray *infer_roi_array,
++                                ModelOutputPostproc *model_postproc, const char *model_name,
++                                const FFBaseInference *ff_base_inference) {
++    int batch_size = infer_roi_array->num_infer_ROIs;
++
++    for (int n = 0; n < blob_array->num_blobs; n++) {
++        OutputBlobContext *ctx = blob_array->output_blobs[n];
++        const OutputBlobMethod *blob = ctx->output_blob_method;
++
++        const char *layer_name = blob->GetOutputLayerName(ctx);
++        const uint8_t *data = (const uint8_t *)blob->GetData(ctx);
++
++        Dimensions dim = blob->GetDims(ctx);
++        IILayout layout = blob->GetLayout(ctx);
++        IEPrecision precision = blob->GetPrecision(ctx);
++
++        int size = get_unbatched_size_in_bytes(ctx, batch_size);
++
++        for (int b = 0; b < batch_size; b++) {
++            AVBufferRef *ref;
++            AVFrame *av_frame = infer_roi_array->infer_ROIs[b]->frame;
++            AVFrameSideData *sd = NULL;
++
++            InferTensorMeta *infer_meta = NULL;
++            TensorsArray *infer_array = NULL;
++            IETensorMeta *new_infer = NULL;
++
++            infer_array = (TensorsArray *)av_mallocz(sizeof(*infer_array));
++            infer_meta = (InferTensorMeta *)av_malloc(sizeof(*infer_meta));
++            av_assert0(infer_meta && infer_array);
++            infer_meta->t_array = infer_array;
++
++            new_infer = (IETensorMeta *)av_mallocz(sizeof(*new_infer));
++            av_assert0(new_infer);
++
++            fill_tensor_metadata(new_infer, layer_name, model_name, precision, layout, dim.num_dims, dim.dims,
++                                 (void *)(data + b * size), size);
++
++            av_dynarray_add(&infer_meta->t_array->tensors, &infer_meta->t_array->num, new_infer);
++
++            ref = av_buffer_create((uint8_t *)infer_meta, sizeof(*infer_meta), &infer_tensor_metadata_buffer_free, NULL,
++                                   0);
++            if (ref == NULL) {
++                infer_tensor_metadata_buffer_free(NULL, (uint8_t *)infer_meta);
++                av_assert0(ref);
++            }
++            // add meta data to side data
++            sd = av_frame_new_side_data_from_buf(av_frame, AV_FRAME_DATA_INFERENCE_INFER, ref);
++            if (sd == NULL) {
++                av_buffer_unref(&ref);
++                av_assert0(sd);
++            }
++            VAII_LOGD("av_frame:%p sd:%d\n", av_frame, av_frame->nb_side_data);
++        }
++    }
++}
++
+ PostProcFunction getPostProcFunctionByName(const char *name, const char *model) {
+     if (name == NULL || model == NULL)
+         return NULL;
+@@ -780,9 +859,11 @@ PostProcFunction getPostProcFunctionByName(const char *name, const char *model)
+         if (strstr(model, "yolo"))
+             return (PostProcFunction)ExtractYOLOV3BoundingBoxes;
+         else
+-            return (PostProcFunction)ExtractBoundingBoxes;
++            return (PostProcFunction)ExtractSSDBoundingBoxes;
+     } else if (!strcmp(name, "classify")) {
+-        return (PostProcFunction)Blob2RoiMeta;
++        return (PostProcFunction)ExtractClassifyResults;
++    } else if (!strcmp(name, "infer")) {
++        return (PostProcFunction)ExtractInferResults;
+     }
+     return NULL;
+ }
+diff --git a/libavfilter/inference_backend/image_inference.h b/libavfilter/inference_backend/image_inference.h
+index 5be91e6498..9a81b9e021 100644
+--- a/libavfilter/inference_backend/image_inference.h
++++ b/libavfilter/inference_backend/image_inference.h
+@@ -75,7 +75,7 @@ struct ImageInference {
+ 
+     /* create image inference engine w/ asynchronous input preprocessing */
+     int (*CreateAsyncPreproc)(ImageInferenceContext *async_preproc_context, ImageInferenceContext *inference_context,
+-                              PreProcContext *preproc_context, int image_queue_size, void *opaque);
++                              int image_queue_size, int, void *opaque);
+ 
+     /* submit image */
+     void (*SubmitImage)(ImageInferenceContext *ctx, const Image *image, IFramePtr user_data,
+diff --git a/libavfilter/inference_backend/image_inference_async_preproc.c b/libavfilter/inference_backend/image_inference_async_preproc.c
+index 5ab87cea40..e564214e97 100644
+--- a/libavfilter/inference_backend/image_inference_async_preproc.c
++++ b/libavfilter/inference_backend/image_inference_async_preproc.c
+@@ -43,17 +43,25 @@ static void PreprocImagesFree(PreprocImage **imgs, size_t num_imgs) {
+ }
+ 
+ static int ImageInferenceAsyncPreprocCreate(ImageInferenceContext *async_preproc_context,
+-                                            ImageInferenceContext *inference_context, PreProcContext *preproc_context,
+-                                            int image_queue_size, void *opaque) {
++                                            ImageInferenceContext *inference_context, int image_queue_size,
++                                            int vpp_device_type, void *opaque) {
+     int ret = 0;
+     int width = 0, height = 0, format = 0;
+     ImageInferenceAsyncPreproc *async_preproc = (ImageInferenceAsyncPreproc *)async_preproc_context->priv;
+-    PreProcInitParam pp_init_param = {};
+-    assert(inference_context && preproc_context);
++    PreProcInitParam pp_init_param = {0};
++    PreProcContext *preproc_context;
++
++    assert(inference_context);
+ 
+     VAII_INFO("Using async preproc image inference.");
+ 
+     async_preproc->actual = inference_context;
++
++    preproc_context =
++        (vpp_device_type == 1 /* VPP_DEVICE_HW */) ? CreatePreProcessor("vaapi") : CreatePreProcessor("mocker");
++
++    assert(preproc_context);
++
+     async_preproc->pre_proc = preproc_context;
+ 
+     // TODO: create image pool
+@@ -194,7 +202,7 @@ static void ImageInferenceAsyncPreprocClose(ImageInferenceContext *ctx) {
+     infer->Close(infer_ctx);
+     image_inference_free(infer_ctx);
+     pp_ctx->pre_proc->Destroy(pp_ctx);
+-    pre_proc_free(pp_ctx);
++    ReleasePreProcessor(pp_ctx);
+ 
+     PreprocImagesFree(async_preproc->preproc_images, async_preproc->num_preproc_images);
+ 
+diff --git a/libavfilter/inference_backend/metaconverter.h b/libavfilter/inference_backend/metaconverter.h
+index 3370b83b17..d5e6b2964b 100644
+--- a/libavfilter/inference_backend/metaconverter.h
++++ b/libavfilter/inference_backend/metaconverter.h
+@@ -20,10 +20,10 @@
+ 
+ #pragma once
+ 
++#include "ff_base_inference.h"
+ #include "libavfilter/avfilter.h"
+ #include <json-c/json.h>
+ #include <libavutil/frame.h>
+-#include "ff_base_inference.h"
+ 
+ typedef enum {
+     FFVA_METACONVERT_TENSOR2TEXT,
+diff --git a/libavfilter/inference_backend/model_proc.c b/libavfilter/inference_backend/model_proc.c
+index 88490f46c3..5f1604975f 100644
+--- a/libavfilter/inference_backend/model_proc.c
++++ b/libavfilter/inference_backend/model_proc.c
+@@ -107,23 +107,6 @@ end:
+     return proc_config;
+ }
+ 
+-void model_proc_load_default_config_file(ModelInputPreproc *preproc, ModelOutputPostproc *postproc) {
+-    if (preproc) {
+-        /*
+-         * format is a little tricky, an ideal input format for IE is BGR planer
+-         * however, neither soft csc nor hardware vpp could support that format.
+-         * Here, we set a close soft format. The actual one coverted before sent
+-         * to IE will be decided by user config and hardware vpp used or not.
+-         */
+-        preproc->color_format = AV_PIX_FMT_BGR24;
+-        preproc->layer_name = NULL;
+-    }
+-
+-    if (postproc) {
+-        // do nothing
+-    }
+-}
+-
+ int model_proc_parse_input_preproc(const void *json, ModelInputPreproc *m_preproc) {
+     json_object *jvalue, *preproc, *color, *layer, *object_class;
+     int ret;
+@@ -272,4 +255,4 @@ void model_proc_release_model_proc(const void *json, ModelInputPreproc *preproc,
+     }
+ 
+     json_object_put((json_object *)json);
+-}
+\ No newline at end of file
++}
+diff --git a/libavfilter/inference_backend/model_proc.h b/libavfilter/inference_backend/model_proc.h
+index e4289d45e5..72d506a0d8 100644
+--- a/libavfilter/inference_backend/model_proc.h
++++ b/libavfilter/inference_backend/model_proc.h
+@@ -24,8 +24,6 @@
+ 
+ void *model_proc_read_config_file(const char *path);
+ 
+-void model_proc_load_default_config_file(ModelInputPreproc *preproc, ModelOutputPostproc *postproc);
+-
+ int model_proc_parse_input_preproc(const void *json, ModelInputPreproc *m_preproc);
+ 
+ int model_proc_parse_output_postproc(const void *json, ModelOutputPostproc *m_postproc);
+@@ -34,4 +32,4 @@ void model_proc_release_model_proc(const void *json, ModelInputPreproc *preproc,
+ 
+ int model_proc_get_file_size(FILE *fp);
+ 
+-void infer_labels_buffer_free(void *opaque, uint8_t *data);
+\ No newline at end of file
++void infer_labels_buffer_free(void *opaque, uint8_t *data);
+diff --git a/libavfilter/inference_backend/openvino_image_inference.c b/libavfilter/inference_backend/openvino_image_inference.c
+index e0bdd2ee58..af979d7cf0 100644
+--- a/libavfilter/inference_backend/openvino_image_inference.c
++++ b/libavfilter/inference_backend/openvino_image_inference.c
+@@ -24,13 +24,12 @@
+ #include "image_inference.h"
+ #include "logger.h"
+ #include "openvino_image_inference.h"
++#include "wrap_image.h"
+ 
+ #define II_MAX(a, b) ((a) > (b) ? (a) : (b))
+ #define II_MIN(a, b) ((a) > (b) ? (b) : (a))
+ 
+-typedef enum { VPP_DEVICE_HW, VPP_DEVICE_SW } DEVICE_TYPE;
+-
+-static inline void* mallocz(size_t size) {
++static inline void *mallocz(size_t size) {
+     void *ptr = malloc(size);
+     if (ptr)
+         memset(ptr, 0, size);
+@@ -38,12 +37,13 @@ static inline void* mallocz(size_t size) {
+ }
+ 
+ static ie_config_t *StringToIEConfig(const char *configs, char **pre_processor_name, char **multi_device_list,
+-                                     char **hetero_device_list, char**image_format) {
++                                     char **hetero_device_list, char **image_format) {
+ 
+     ie_config_t *config_res = NULL, *cfg_tmp = NULL;
+     char *key = NULL, *value = NULL, *configs_temp = NULL;
+ 
+-    if (!configs) return NULL;
++    if (!configs)
++        return NULL;
+ 
+     configs_temp = (char *)mallocz(strlen(configs) + 1);
+     assert(configs_temp);
+@@ -104,11 +104,11 @@ static ie_config_t *StringToIEConfig(const char *configs, char **pre_processor_n
+     return config_res;
+ }
+ 
+-static void ie_config_free(ie_config_t *config) {
++static void FreeIEConfigs(ie_config_t *config) {
+     while (config) {
+         ie_config_t *_tmp = config;
+         config = _tmp->next;
+-        free((char *)_tmp->name),
++        free((char *)_tmp->name);
+         free((char *)_tmp->value);
+         _tmp->name = NULL, _tmp->value = NULL, _tmp->next = NULL;
+         free(_tmp);
+@@ -118,24 +118,15 @@ static void ie_config_free(ie_config_t *config) {
+ 
+ static void completion_callback(void *args);
+ 
+-static inline int getNumberChannels(int format) {
+-    switch (format) {
+-    case FOURCC_BGRA:
+-    case FOURCC_BGRX:
+-    case FOURCC_RGBA:
+-    case FOURCC_RGBX:
+-        return 4;
+-    case FOURCC_BGR:
+-        return 3;
+-    }
+-    return 0;
+-}
+-
+ static colorformat_e FormatNameToIEColorFormat(const char *format) {
+-    static const char *formats[] = {"NV12", "RGB", "BGR", "RGBX", "BGRX", "RGBA", "BGRA"};
+-    const colorformat_e ie_color_formats[] = {NV12, RGB, BGR, RGBX, BGRX, RGBX, BGRX};
++    static const char *formats[] = {"NV12", "I420", "RGB", "BGR", "RGBX", "BGRX", "RGBA", "BGRA"};
++    const colorformat_e ie_color_formats[] = {NV12, I420, RGB, BGR, RGBX, BGRX, RGBX, BGRX};
++    int num_formats;
++
++    if (!format)
++        return RAW;
+ 
+-    int num_formats = sizeof(formats) / sizeof(formats[0]);
++    num_formats = sizeof(formats) / sizeof(formats[0]);
+     for (int i = 0; i < num_formats; i++) {
+         if (!strcmp(format, formats[i]))
+             return ie_color_formats[i];
+@@ -145,12 +136,35 @@ static colorformat_e FormatNameToIEColorFormat(const char *format) {
+     return RAW;
+ }
+ 
+-static inline void RectToIERoi(roi_t *roi, const Rectangle *rect) {
+-    roi->id = 0;
+-    roi->posX = rect->x;
+-    roi->posY = rect->y;
+-    roi->sizeX = rect->width;
+-    roi->sizeY = rect->height;
++static void SubmitExtraInputBlob(OpenVINOImageInference *vino, const BatchRequest *request, Image *image) {
++    ie_blob_t *input_blob = NULL;
++    dimensions_t blob_dims = {};
++    ie_blob_buffer_t blob_buffer;
++    float *blob_data = NULL;
++
++    ie_infer_request_get_blob(request->infer_request, vino->input_name_imginfo, &input_blob);
++    ie_blob_get_dims(input_blob, &blob_dims);
++
++    // Fill input tensor with values
++    ie_blob_get_buffer(input_blob, &blob_buffer);
++    blob_data = (float *)(blob_buffer.buffer);
++
++    if (!strcmp(vino->input_name_imginfo, "seq_ind")) {
++        int maxSequenceSizePerPlate = blob_dims.dims[0];
++        blob_data[0] = 0.0f;
++        for (int n = 1; n < maxSequenceSizePerPlate; n++)
++            blob_data[n] = 1.0f;
++    } else if (!strcmp(vino->input_name_imginfo, "im_info")) {
++        for (int i = 0; i < vino->batch_size; i++) {
++            blob_data[i * blob_dims.dims[1] + 0] = (float)image->height;
++            blob_data[i * blob_dims.dims[1] + 1] = (float)image->width;
++
++            for (int k = 2; k < blob_dims.dims[1]; k++) {
++                blob_data[i * blob_dims.dims[1] + k] = 1.0f; // all scale factors are set to 1.0
++            }
++        }
++    }
++    ie_blob_free(&input_blob);
+ }
+ 
+ static void GetNextImageBuffer(ImageInferenceContext *ctx, const BatchRequest *request, Image *image) {
+@@ -179,7 +193,8 @@ static void GetNextImageBuffer(ImageInferenceContext *ctx, const BatchRequest *r
+     image->stride[0] = image->width;
+     image->stride[1] = image->width;
+     image->stride[2] = image->width;
+-    ie_blob_destroy(&input_blob);
++
++    ie_blob_free(&input_blob);
+ }
+ 
+ static inline Image ApplyCrop(const Image *src) {
+@@ -251,45 +266,18 @@ static void SubmitImagePreProcess(ImageInferenceContext *ctx, const BatchRequest
+                                   PreProcessor preProcessor) {
+     OpenVINOImageInference *vino = (OpenVINOImageInference *)ctx->priv;
+ 
+-    if (vino->resize_by_inference) {
+-
++    if (!vino->pre_processor) {
++        ie_blob_t *blob_ptr = NULL;
+         // ie preprocess can only support system memory right now
+         assert(pSrc->type == MEM_TYPE_SYSTEM);
+-        if (pSrc->format != FOURCC_NV12) {
+-            roi_t roi, *_roi = NULL;
+-            ie_blob_t *input_blob = NULL;
+-            tensor_desc_t tensor = {NHWC, {4, {1, getNumberChannels(pSrc->format), pSrc->height, pSrc->width}}, U8};
+-            if (pSrc->rect.width != 0 && pSrc->rect.height != 0) {
+-                RectToIERoi(&roi, &pSrc->rect);
+-                _roi = &roi;
+-            }
+ 
+-            ie_blob_make_memory_from_preallocated(&tensor, pSrc->planes[0], 0, &input_blob);
+-            if (_roi) {
+-                ie_blob_t *input_blob_roi = NULL;
+-                ie_blob_make_memory_with_roi(input_blob, _roi, &input_blob_roi);
+-                ie_infer_request_set_blob(request->infer_request, vino->input_name, input_blob_roi);
+-                ie_blob_destroy(&input_blob_roi);
+-            } else {
+-                ie_infer_request_set_blob(request->infer_request, vino->input_name, input_blob);
+-                ie_blob_destroy(&input_blob);
+-            }
+-        } else {
+-            Image src = {};
+-            src = ApplyCrop(pSrc);
+-
+-            ie_blob_t *y_blob = NULL, *uv_blob = NULL, *nv12_blob = NULL;
+-            tensor_desc_t y_tensor = {NHWC, {4, {1, 1, src.height - src.height % 2, src.width - src.width % 2}}, U8};
+-            tensor_desc_t uv_tensor = {NHWC, {4, {1, 2, src.height / 2, src.width / 2}}, U8};
+-            ie_blob_make_memory_from_preallocated(&y_tensor, src.planes[0], 0, &y_blob);
+-            ie_blob_make_memory_from_preallocated(&uv_tensor, src.planes[1], 0, &uv_blob);
+-            ie_blob_make_memory_nv12(y_blob, uv_blob, &nv12_blob);
+-
+-            ie_infer_request_set_blob(request->infer_request, vino->input_name, nv12_blob);
+-            ie_blob_destroy(&y_blob);
+-            ie_blob_destroy(&uv_blob);
+-            ie_blob_destroy(&nv12_blob);
+-        }
++        blob_ptr = WrapImageToBlob(pSrc);
++
++        assert(blob_ptr);
++
++        ie_infer_request_set_blob(request->infer_request, vino->input_name, blob_ptr);
++
++        ie_blob_free(&blob_ptr);
+     } else {
+         Image src = {};
+         Image dst = {};
+@@ -297,20 +285,17 @@ static void SubmitImagePreProcess(ImageInferenceContext *ctx, const BatchRequest
+         dst.type = pSrc->type;
+         GetNextImageBuffer(ctx, request, &dst);
+ 
++        if (vino->input_name_imginfo != NULL) {
++            SubmitExtraInputBlob(vino, request, &dst);
++        }
++
+         if (pSrc->planes[0] != dst.planes[0]) { // only convert if different buffers
+-            if (!vino->vpp_ctx) {
+-                vino->vpp_ctx = pre_proc_alloc(pre_proc_get_by_type(MEM_TYPE_SYSTEM));
+-                assert(vino->vpp_ctx);
+-            }
+-#ifdef HAVE_GAPI
+-            vino->vpp_ctx->pre_proc->Convert(vino->vpp_ctx, &src, &dst, 0);
+-#else
+             if (pSrc->type == MEM_TYPE_SYSTEM)
+                 src = ApplyCrop(pSrc);
+             else
+                 src = *pSrc;
+-            vino->vpp_ctx->pre_proc->Convert(vino->vpp_ctx, &src, &dst, 0);
+-#endif
++            vino->pre_processor->pre_proc->Convert(vino->pre_processor, &src, &dst, 0);
++
+             // model specific pre-processing
+             if (preProcessor)
+                 preProcessor(&dst);
+@@ -318,6 +303,25 @@ static void SubmitImagePreProcess(ImageInferenceContext *ctx, const BatchRequest
+     }
+ }
+ 
++static char *CreateDeviceList(const char *devices, char *multi_devices, char *hetero_devices) {
++    char *_devices = NULL;
++
++    char *device_list =
++        (!strcmp(devices, "MULTI")) ? multi_devices : (!strcmp(devices, "HETERO") ? hetero_devices : NULL);
++
++    if (device_list) {
++        _devices = (char *)malloc(strlen(devices) + strlen(device_list) + 2);
++        assert(_devices);
++
++        memset(_devices, 0, sizeof(*_devices));
++        strcpy(_devices, devices);
++        strcat(_devices, ":");
++        strcat(_devices, device_list);
++    }
++
++    return _devices;
++}
++
+ static int OpenVINOImageInferenceCreate(ImageInferenceContext *ctx, MemoryType type, const char *devices,
+                                         const char *model, int batch_size, int nireq, const char *configs,
+                                         void *allocator, CallbackFunc callback) {
+@@ -346,49 +350,12 @@ static int OpenVINOImageInferenceCreate(ImageInferenceContext *ctx, MemoryType t
+         return -1;
+     }
+ 
+-    if (configs) {
+-        ie_config_t *_configs = StringToIEConfig(configs, &pre_processor_name, &multi_device_list,
+-                                                &hetero_device_list, &image_format);
++    if (configs && strlen(configs) > 0) {
++        ie_config_t *_configs =
++            StringToIEConfig(configs, &pre_processor_name, &multi_device_list, &hetero_device_list, &image_format);
+         ie_core_set_config(vino->core, _configs, devices);
+-        vino->resize_by_inference = (pre_processor_name && !strcmp(pre_processor_name, "ie")) ? 1 : 0;
+-
+-        if (!strcmp(devices, "MULTI")) {
+-            if (multi_device_list) {
+-                _devices = (char *)malloc(strlen(devices) + strlen(multi_device_list) + 2);
+-                if (!_devices) {
+-                    VAII_ERROR("Not enough memory!");
+-                    ie_config_free(_configs);
+-                    goto err;
+-                }
+-                memset(_devices, 0, sizeof(*_devices));
+-                strcpy(_devices, devices);
+-                strcat(_devices, ":");
+-                strcat(_devices, multi_device_list);
+-            }
+-        } else if (!strcmp(devices, "HETERO")) {
+-            if (hetero_device_list) {
+-                _devices = (char *)malloc(strlen(devices) + strlen(hetero_device_list) + 2);
+-                if (!_devices) {
+-                    VAII_ERROR("Not enough memory!");
+-                    ie_config_free(_configs);
+-                    goto err;
+-                }
+-                memset(_devices, 0, sizeof(*_devices));
+-                strcpy(_devices, devices);
+-                strcat(_devices, ":");
+-                strcat(_devices, hetero_device_list);
+-            }
+-        }
+-
+-        ie_config_free(_configs);
+-
+-        if (pre_processor_name)
+-            free(pre_processor_name);
+-        if (hetero_device_list)
+-            free(hetero_device_list);
+-        if (multi_device_list)
+-            free(multi_device_list);
+-        pre_processor_name = NULL, hetero_device_list = NULL, multi_device_list = NULL;
++        _devices = CreateDeviceList(devices, multi_device_list, hetero_device_list);
++        FreeIEConfigs(_configs);
+     }
+ 
+     // Read network
+@@ -407,6 +374,39 @@ static int OpenVINOImageInferenceCreate(ImageInferenceContext *ctx, MemoryType t
+         goto err;
+     }
+ 
++    if (input_num > 2) {
++        VAII_ERROR("Network should have 1 or 2 inputs!");
++        goto err;
++    }
++
++    ie_network_get_input_name(vino->network, 0, &vino->input_name);
++    if (!vino->input_name) {
++        VAII_ERROR("Get network input name failed!");
++        goto err;
++    }
++    ie_network_set_input_precision(vino->network, vino->input_name, U8);
++
++    // Some models have 2 inputs: Faster-RCNN and LPR converted from Caffe
++    // Now all LRR models we use are converted from Caffe
++    if (input_num == 2) {
++        ie_network_get_input_name(vino->network, 1, &vino->input_name_imginfo);
++        if (!vino->input_name_imginfo) {
++            VAII_ERROR("Get network input name failed!");
++            goto err;
++        }
++
++        if (!strcmp(vino->input_name_imginfo, "im_info")) {
++            dimensions_t input_dims = {};
++
++            ie_network_get_input_dims(vino->network, vino->input_name_imginfo, &input_dims);
++            ie_network_set_input_precision(vino->network, vino->input_name_imginfo, FP32);
++            if (input_dims.dims[1] != 3 && input_dims.dims[1] != 6) {
++                VAII_ERROR("Invalid input info. Should be 3 or 6 values length\n");
++                goto err;
++            }
++        }
++    }
++
+     ie_network_get_input_shapes(vino->network, &network_input_shapes);
+     if (batch_size > 1 && network_input_shapes.shapes) {
+         for (int i = 0; i < network_input_shapes.shape_num; i++)
+@@ -416,24 +416,18 @@ static int OpenVINOImageInferenceCreate(ImageInferenceContext *ctx, MemoryType t
+     ie_network_input_shapes_free(&network_input_shapes);
+     network_input_shapes.shape_num = 0;
+ 
+-    ie_network_get_input_name(vino->network, 0, &vino->input_name);
+-    if (!vino->input_name) {
+-        VAII_ERROR("Get network input name failed!");
+-        goto err;
+-    }
+-
+-    ie_network_set_input_precision(vino->network, vino->input_name, U8);
+     ie_network_set_input_layout(vino->network, vino->input_name, NCHW);
+ 
+-    if (image_format) {
+-        vino->ie_color_format = FormatNameToIEColorFormat(image_format);
+-        ie_network_set_color_format(vino->network, vino->input_name, vino->ie_color_format);
+-        free(image_format);
+-        image_format = NULL;
+-    }
++    if (pre_processor_name && !strcmp(pre_processor_name, "ie")) {
++        if (batch_size > 1) {
++            VAII_ERROR("IE pre processing doesn't support batch mode yet!");
++            goto err;
++        }
+ 
+-    if (vino->resize_by_inference) {
+         ie_network_set_input_resize_algorithm(vino->network, vino->input_name, RESIZE_BILINEAR);
++        ie_network_set_color_format(vino->network, vino->input_name, FormatNameToIEColorFormat(image_format));
++    } else {
++        vino->pre_processor = CreatePreProcessor(pre_processor_name);
+     }
+ 
+     // Load network
+@@ -445,6 +439,7 @@ static int OpenVINOImageInferenceCreate(ImageInferenceContext *ctx, MemoryType t
+         VAII_ERROR("Creat executable network failed!");
+         goto err;
+     }
++
+     if (_devices)
+         free(_devices);
+ 
+@@ -460,7 +455,7 @@ static int OpenVINOImageInferenceCreate(ImageInferenceContext *ctx, MemoryType t
+         goto err;
+     }
+     vino->num_reqs = nireq;
+-    for (size_t i = 0 ; i < vino->num_reqs; ++i) {
++    for (size_t i = 0; i < vino->num_reqs; ++i) {
+         ie_exec_network_create_infer_request(vino->exe_network, &vino->infer_requests[i]);
+         if (!vino->infer_requests[i]) {
+             VAII_ERROR("Creat infer requests failed!");
+@@ -505,7 +500,17 @@ static int OpenVINOImageInferenceCreate(ImageInferenceContext *ctx, MemoryType t
+     pthread_mutex_init(&vino->count_mutex, NULL);
+     pthread_cond_init(&vino->request_processed, NULL);
+ 
++    if (pre_processor_name)
++        free(pre_processor_name);
++    if (hetero_device_list)
++        free(hetero_device_list);
++    if (multi_device_list)
++        free(multi_device_list);
++    if (image_format)
++        free(image_format);
++
+     return 0;
++
+ err:
+     if (pre_processor_name)
+         free(pre_processor_name);
+@@ -537,7 +542,7 @@ err:
+     if (vino->freeRequests)
+         SafeQueueDestroy(vino->freeRequests);
+     if (vino->exe_network)
+-        ie_exec_network_free (&vino->exe_network);
++        ie_exec_network_free(&vino->exe_network);
+     if (vino->network)
+         ie_network_free(&vino->network);
+     if (vino->core)
+@@ -546,7 +551,7 @@ err:
+ }
+ 
+ static void OpenVINOImageInferenceSubmtImage(ImageInferenceContext *ctx, const Image *image, IFramePtr user_data,
+-                                             PreProcessor pre_processor) {
++                                             PreProcessor preproc_func) {
+     OpenVINOImageInference *vino = (OpenVINOImageInference *)ctx->priv;
+     const Image *pSrc = image;
+     BatchRequest *request = NULL;
+@@ -559,39 +564,12 @@ static void OpenVINOImageInferenceSubmtImage(ImageInferenceContext *ctx, const I
+ 
+     request = (BatchRequest *)SafeQueuePop(vino->freeRequests);
+ 
+-    SubmitImagePreProcess(ctx, request, pSrc, pre_processor);
++    SubmitImagePreProcess(ctx, request, pSrc, preproc_func);
+ 
+     image_inference_dynarray_add(&request->buffers.frames, &request->buffers.num_buffers, user_data);
+ 
+     // start inference asynchronously if enough buffers for batching
+     if (request->buffers.num_buffers >= vino->batch_size) {
+-#if 1 // TODO: remove when license-plate-recognition-barrier model will take one input
+-        size_t num_inputs;
+-        ie_network_get_inputs_number(vino->network, &num_inputs);
+-        if (num_inputs > 1) {
+-            char *input_name = NULL;
+-            ie_network_get_input_name(vino->network, 1, &input_name);
+-            if (!strcmp(input_name, "seq_ind")) {
+-                // 'seq_ind' input layer is some relic from the training
+-                // it should have the leading 0.0f and rest 1.0f
+-                dimensions_t dims = {};
+-                float *blob_data;
+-                int maxSequenceSizePerPlate;
+-                ie_blob_t *input_blob = NULL;
+-                ie_blob_buffer_t blob_buffer;
+-                ie_infer_request_get_blob(request->infer_request, input_name, &input_blob);
+-                ie_blob_get_dims(input_blob, &dims);
+-                maxSequenceSizePerPlate = dims.dims[0];
+-                ie_blob_get_buffer(input_blob, &blob_buffer);
+-                blob_data = (float *)(blob_buffer.buffer);
+-                blob_data[0] = 0.0f;
+-                for (int n = 1; n < maxSequenceSizePerPlate; n++)
+-                    blob_data[n] = 1.0f;
+-                ie_blob_destroy(&input_blob);
+-            }
+-            ie_network_name_free(&input_name);
+-        }
+-#endif
+         request->callback.completeCallBackFunc = completion_callback;
+         request->callback.args = request;
+         request->inference_ctx = ctx;
+@@ -652,7 +630,7 @@ static void OpenVINOImageInferenceClose(ImageInferenceContext *ctx) {
+     OpenVINOImageInference *vino = (OpenVINOImageInference *)ctx->priv;
+     if (vino->infer_requests) {
+         for (size_t i = 0; i < vino->num_reqs; ++i)
+-            if(vino->infer_requests[i])
++            if (vino->infer_requests[i])
+                 ie_infer_request_free(&vino->infer_requests[i]);
+         free(vino->infer_requests);
+     }
+@@ -671,14 +649,17 @@ static void OpenVINOImageInferenceClose(ImageInferenceContext *ctx) {
+     if (vino->input_name)
+         ie_network_name_free(&vino->input_name);
+ 
++    if (vino->input_name_imginfo)
++        ie_network_name_free(&vino->input_name_imginfo);
++
+     pthread_mutex_destroy(&vino->flush_mutex);
+     pthread_mutex_destroy(&vino->callback_mutex);
+     pthread_mutex_destroy(&vino->count_mutex);
+     pthread_cond_destroy(&vino->request_processed);
+ 
+-    if (vino->vpp_ctx) {
+-        vino->vpp_ctx->pre_proc->Destroy(vino->vpp_ctx);
+-        pre_proc_free(vino->vpp_ctx);
++    if (vino->pre_processor) {
++        vino->pre_processor->pre_proc->Destroy(vino->pre_processor);
++        ReleasePreProcessor(vino->pre_processor);
+     }
+ 
+     ie_exec_network_free(&vino->exe_network);
+@@ -715,10 +696,11 @@ static void completion_callback(void *args) {
+     for (int n = 0; n < blob_array.num_blobs; n++) {
+         OutputBlobContext *blob_ctx = blob_array.output_blobs[n];
+         OpenVINOOutputBlob *vino_blob = (OpenVINOOutputBlob *)blob_ctx->priv;
++        char *output_name = NULL;
+         ie_infer_request_set_blob(request->infer_request, vino_blob->name, vino_blob->blob);
+-        char *output_name = (char *)vino_blob->name;
++        output_name = (char *)vino_blob->name;
+         ie_network_name_free(&output_name);
+-        ie_blob_destroy(&vino_blob->blob);
++        ie_blob_free(&vino_blob->blob);
+         output_blob_free(blob_ctx);
+     }
+     blob_array.num_blobs = 0;
+@@ -756,7 +738,7 @@ static Dimensions OpenVINOOutputBlobGetDims(OutputBlobContext *ctx) {
+ 
+     ie_blob_get_dims(vino_blob->blob, &dims);
+     dims_res.num_dims = dims.ranks;
+-    for (size_t i = 0; i< dims_res.num_dims; ++i)
++    for (size_t i = 0; i < dims_res.num_dims; ++i)
+         dims_res.dims[i] = dims.dims[i];
+     return dims_res;
+ }
+diff --git a/libavfilter/inference_backend/openvino_image_inference.h b/libavfilter/inference_backend/openvino_image_inference.h
+index 3e06396bb0..8535a8e6f4 100644
+--- a/libavfilter/inference_backend/openvino_image_inference.h
++++ b/libavfilter/inference_backend/openvino_image_inference.h
+@@ -20,10 +20,10 @@
+ 
+ #pragma once
+ 
+-#include <ie_c_api.h>
+ #include "image_inference.h"
+ #include "pre_proc.h"
+ #include "safe_queue.h"
++#include <c_api/ie_c_api.h>
+ #include <pthread.h>
+ 
+ typedef struct BatchRequest {
+@@ -36,9 +36,6 @@ typedef struct BatchRequest {
+ } BatchRequest;
+ 
+ typedef struct OpenVINOImageInference {
+-    int resize_by_inference;
+-    colorformat_e ie_color_format;
+-
+     CallbackFunc callback;
+ 
+     // Inference Engine
+@@ -46,6 +43,7 @@ typedef struct OpenVINOImageInference {
+     ie_network_t *network;
+     char *model_name;
+     char *input_name;
++    char *input_name_imginfo; // special for Faster-RCNN and LPR converted from Caffe
+     ie_executable_network_t *exe_network;
+     ie_infer_request_t **infer_requests;
+     size_t num_reqs;
+@@ -56,10 +54,10 @@ typedef struct OpenVINOImageInference {
+     // Threading
+     int batch_size;
+     pthread_t working_thread;
+-    SafeQueueT *freeRequests;    // BatchRequest queue
++    SafeQueueT *freeRequests; // BatchRequest queue
+ 
+     // VPP
+-    PreProcContext *vpp_ctx;
++    PreProcContext *pre_processor;
+ 
+     int already_flushed;
+     unsigned int requests_processing;
+diff --git a/libavfilter/inference_backend/pre_proc.c b/libavfilter/inference_backend/pre_proc.c
+index 623c111dd4..7fa5b758fe 100644
+--- a/libavfilter/inference_backend/pre_proc.c
++++ b/libavfilter/inference_backend/pre_proc.c
+@@ -28,6 +28,11 @@ extern PreProc pre_proc_gapi;
+ extern PreProc pre_proc_vaapi;
+ extern PreProc pre_proc_mocker;
+ 
++static const PreProc *pre_proc_get_by_name(const char *name);
++static const PreProc *pre_proc_get_by_type(MemoryType type);
++static PreProcContext *pre_proc_alloc(const PreProc *pre_proc);
++static void pre_proc_free(PreProcContext *context);
++
+ static const PreProc *const pre_proc_list[] = {
+ #if HAVE_FFMPEG || CONFIG_SWSCALE
+     &pre_proc_swscale,
+@@ -72,7 +77,7 @@ static const PreProc *pre_proc_iterate(void **opaque) {
+     return pp;
+ }
+ 
+-const PreProc *pre_proc_get_by_name(const char *name) {
++static const PreProc *pre_proc_get_by_name(const char *name) {
+     const PreProc *pp = NULL;
+     void *opaque = 0;
+ 
+@@ -86,7 +91,7 @@ const PreProc *pre_proc_get_by_name(const char *name) {
+     return NULL;
+ }
+ 
+-const PreProc *pre_proc_get_by_type(MemoryType type) {
++static const PreProc *pre_proc_get_by_type(MemoryType type) {
+     const PreProc *ret = NULL;
+ 
+     if (type == MEM_TYPE_SYSTEM) {
+@@ -102,7 +107,7 @@ const PreProc *pre_proc_get_by_type(MemoryType type) {
+     return ret;
+ }
+ 
+-PreProcContext *pre_proc_alloc(const PreProc *pre_proc) {
++static PreProcContext *pre_proc_alloc(const PreProc *pre_proc) {
+     PreProcContext *ret;
+ 
+     if (pre_proc == NULL)
+@@ -127,7 +132,7 @@ err:
+     return NULL;
+ }
+ 
+-void pre_proc_free(PreProcContext *context) {
++static void pre_proc_free(PreProcContext *context) {
+     if (context == NULL)
+         return;
+ 
+@@ -136,6 +141,23 @@ void pre_proc_free(PreProcContext *context) {
+     free(context);
+ }
+ 
++PreProcContext *CreatePreProcessor(const char *pre_processor_name) {
++    const PreProc *_pre_proc;
++
++    if (!pre_processor_name)
++        pre_processor_name = "swscale";
++
++    _pre_proc = pre_proc_get_by_name(pre_processor_name);
++    if (!_pre_proc)
++        return NULL;
++
++    return pre_proc_alloc(_pre_proc);
++}
++
++void ReleasePreProcessor(PreProcContext *context) {
++    pre_proc_free(context);
++}
++
+ #ifdef DEBUG
+ #include "logger.h"
+ #include <assert.h>
+@@ -236,4 +258,4 @@ void DumpImageInfo(const Image *p) {
+     VAII_LOGI("Image w:%d h:%d f:%x, plane: %p %p %p  stride: %d %d %d \n", p->width, p->height, p->format,
+               p->planes[0], p->planes[1], p->planes[2], p->stride[0], p->stride[1], p->stride[2]);
+ }
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/libavfilter/inference_backend/pre_proc.h b/libavfilter/inference_backend/pre_proc.h
+index 805767b67d..2cc5734498 100644
+--- a/libavfilter/inference_backend/pre_proc.h
++++ b/libavfilter/inference_backend/pre_proc.h
+@@ -64,13 +64,9 @@ struct PreProcContext {
+ 
+ int GetPlanesCount(int fourcc);
+ 
+-const PreProc *pre_proc_get_by_name(const char *name);
++PreProcContext *CreatePreProcessor(const char *pre_processor_name);
+ 
+-const PreProc *pre_proc_get_by_type(MemoryType type);
+-
+-PreProcContext *pre_proc_alloc(const PreProc *pre_proc);
+-
+-void pre_proc_free(PreProcContext *context);
++void ReleasePreProcessor(PreProcContext *context);
+ 
+ #ifdef DEBUG
+ void DumpBGRpToRgb24File(const Image *out_image);
+@@ -78,4 +74,4 @@ void DumpRGBpToRgb24File(const Image *out_image);
+ void DumpRGBpToFile(const Image *out_image);
+ void DumpBGRAToFile(const Image *out_image);
+ inline void DumpImageInfo(const Image *p);
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/libavfilter/inference_backend/wrap_image.c b/libavfilter/inference_backend/wrap_image.c
+new file mode 100755
+index 0000000000..968b2159e6
+--- /dev/null
++++ b/libavfilter/inference_backend/wrap_image.c
+@@ -0,0 +1,138 @@
++/*
++ * Copyright (c) 2018-2020 Intel Corporation
++ *
++ * This file is part of FFmpeg.
++ *
++ * FFmpeg is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * FFmpeg is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with FFmpeg; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++ */
++#include <assert.h>
++#include "logger.h"
++#include "wrap_image.h"
++
++static inline int getNumberChannels(int format) {
++    switch (format) {
++    case FOURCC_BGRA:
++    case FOURCC_BGRX:
++    case FOURCC_RGBA:
++    case FOURCC_RGBX:
++        return 4;
++    case FOURCC_BGR:
++        return 3;
++    }
++    return 0;
++}
++
++ie_blob_t *WrapImageToBlob(const Image *img) {
++    ie_blob_t *blob = NULL;
++
++    switch (img->format) {
++    case FOURCC_BGRA:
++    case FOURCC_BGRX:
++    case FOURCC_RGBA:
++    case FOURCC_RGBX:
++    case FOURCC_BGR: {
++        ie_blob_t *input_blob;
++        tensor_desc_t tensor_desc = {NHWC, {4, {1, getNumberChannels(img->format), img->height, img->width}}, U8};
++
++        ie_blob_make_memory_from_preallocated(&tensor_desc, img->planes[0], 0, &input_blob);
++        if (img->rect.width && img->rect.height) {
++            ie_blob_t *input_blob_roi;
++            roi_t roi = {0, (size_t)img->rect.x, (size_t)img->rect.y, (size_t)img->rect.width,
++                         (size_t)img->rect.height};
++            ie_blob_make_memory_with_roi(input_blob, &roi, &input_blob_roi);
++            ie_blob_free(&input_blob);
++            input_blob = input_blob_roi;
++        }
++        blob = input_blob;
++        break;
++    }
++    case FOURCC_I420: {
++        ie_blob_t *y_blob, *u_blob, *v_blob, *i420_blob = NULL;
++        tensor_desc_t y_tensor_desc, u_v_tensor_desc;
++
++        ie_blob_t *y_blob_roi, *u_blob_roi, *v_blob_roi;
++        roi_t crop_roi_y, crop_roi_u_v;
++
++        y_tensor_desc = (tensor_desc_t){NHWC, {4, {1, 1, img->height, img->width}}, U8};
++        u_v_tensor_desc = (tensor_desc_t){NHWC, {4, {1, 1, img->height / 2, img->width / 2}}, U8};
++
++        assert(img->planes[0] && img->planes[1] && img->planes[2]);
++
++        ie_blob_make_memory_from_preallocated(&y_tensor_desc, img->planes[0], 0, &y_blob);
++        ie_blob_make_memory_from_preallocated(&u_v_tensor_desc, img->planes[1], 0, &u_blob);
++        ie_blob_make_memory_from_preallocated(&u_v_tensor_desc, img->planes[2], 0, &v_blob);
++
++        crop_roi_y = (roi_t){0, (size_t)((img->rect.x & 0x1) ? img->rect.x - 1 : img->rect.x),
++                             (size_t)((img->rect.y & 0x1) ? img->rect.y - 1 : img->rect.y),
++                             (size_t)((img->rect.width & 0x1) ? img->rect.width - 1 : img->rect.width),
++                             (size_t)((img->rect.height & 0x1) ? img->rect.height - 1 : img->rect.height)};
++
++        crop_roi_u_v = (roi_t){0, (size_t)img->rect.x / 2, (size_t)img->rect.y / 2, (size_t)img->rect.width / 2,
++                               (size_t)img->rect.height / 2};
++
++        ie_blob_make_memory_with_roi(y_blob, &crop_roi_y, &y_blob_roi);
++        ie_blob_make_memory_with_roi(u_blob, &crop_roi_u_v, &u_blob_roi);
++        ie_blob_make_memory_with_roi(v_blob, &crop_roi_u_v, &v_blob_roi);
++
++        ie_blob_make_memory_i420(y_blob_roi, u_blob_roi, v_blob_roi, &i420_blob);
++        ie_blob_free(&y_blob);
++        ie_blob_free(&u_blob);
++        ie_blob_free(&v_blob);
++        ie_blob_free(&y_blob_roi);
++        ie_blob_free(&u_blob_roi);
++        ie_blob_free(&v_blob_roi);
++
++        blob = i420_blob;
++        break;
++    }
++    case FOURCC_NV12: {
++        ie_blob_t *y_blob, *uv_blob, *nv12_blob = NULL;
++        tensor_desc_t y_tensor_desc, uv_tensor_desc;
++
++        ie_blob_t *y_blob_roi, *uv_blob_roi;
++        roi_t crop_roi_y, crop_roi_uv;
++
++        y_tensor_desc = (tensor_desc_t){NHWC, {4, {1, 1, img->height, img->width}}, U8};
++        uv_tensor_desc = (tensor_desc_t){NHWC, {4, {1, 2, img->height / 2, img->width / 2}}, U8};
++
++        ie_blob_make_memory_from_preallocated(&y_tensor_desc, img->planes[0], 0, &y_blob);
++        ie_blob_make_memory_from_preallocated(&uv_tensor_desc, img->planes[1], 0, &uv_blob);
++
++        crop_roi_y = (roi_t){0, (size_t)((img->rect.x & 0x1) ? img->rect.x - 1 : img->rect.x),
++                             (size_t)((img->rect.y & 0x1) ? img->rect.y - 1 : img->rect.y),
++                             (size_t)((img->rect.width & 0x1) ? img->rect.width - 1 : img->rect.width),
++                             (size_t)((img->rect.height & 0x1) ? img->rect.height - 1 : img->rect.height)};
++
++        crop_roi_uv = (roi_t){0, (size_t)img->rect.x / 2, (size_t)img->rect.y / 2, (size_t)img->rect.width / 2,
++                              (size_t)img->rect.height / 2};
++
++        ie_blob_make_memory_with_roi(y_blob, &crop_roi_y, &y_blob_roi);
++        ie_blob_make_memory_with_roi(uv_blob, &crop_roi_uv, &uv_blob_roi);
++
++        ie_blob_make_memory_nv12(y_blob_roi, uv_blob_roi, &nv12_blob);
++        ie_blob_free(&y_blob);
++        ie_blob_free(&uv_blob);
++        ie_blob_free(&y_blob_roi);
++        ie_blob_free(&uv_blob_roi);
++        blob = nv12_blob;
++        break;
++    }
++    default:
++        VAII_ERROR("Format not support!");
++        return NULL;
++    }
++
++    return blob;
++}
+diff --git a/libavfilter/inference_backend/wrap_image.h b/libavfilter/inference_backend/wrap_image.h
+new file mode 100755
+index 0000000000..6b783ff27f
+--- /dev/null
++++ b/libavfilter/inference_backend/wrap_image.h
+@@ -0,0 +1,27 @@
++/*
++ * Copyright (c) 2018-2020 Intel Corporation
++ *
++ * This file is part of FFmpeg.
++ *
++ * FFmpeg is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * FFmpeg is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with FFmpeg; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++ */
++
++#pragma once
++
++#include <c_api/ie_c_api.h>
++
++#include "image.h"
++
++ie_blob_t *WrapImageToBlob(const Image *img);
+diff --git a/libavfilter/vf_inference_classify.c b/libavfilter/vf_inference_classify.c
+index 3fd2296934..cd216d0e51 100644
+--- a/libavfilter/vf_inference_classify.c
++++ b/libavfilter/vf_inference_classify.c
+@@ -325,7 +325,6 @@ static const AVOption inference_classify_options[] = {
+     { "dnn_backend",  "DNN backend for model execution", OFFSET(backend_type),    AV_OPT_TYPE_FLAGS,  { .i64 = 1},          0, 2,  FLAGS },
+     { "model",        "path to model file for network",  OFFSET(model),           AV_OPT_TYPE_STRING, { .str = NULL},       0, 0,  FLAGS },
+     { "model_proc",   "model preproc and postproc",      OFFSET(model_proc),      AV_OPT_TYPE_STRING, { .str = NULL},       0, 0,  FLAGS },
+-    { "object_class", "objective class",                 OFFSET(object_class),    AV_OPT_TYPE_STRING, { .str = NULL},       0, 0,  FLAGS },
+     { "device",       "running on device name",          OFFSET(device),          AV_OPT_TYPE_STRING, { .str = NULL},       0, 0,  FLAGS },
+     { "configs",      "configurations to backend",       OFFSET(infer_config),    AV_OPT_TYPE_STRING, { .str = NULL},       0, 0,  FLAGS },
+     { "interval",     "detect every Nth frame",          OFFSET(every_nth_frame), AV_OPT_TYPE_INT,    { .i64 = 1 },  1, 1024, FLAGS},
+diff --git a/libavfilter/vf_inference_detect.c b/libavfilter/vf_inference_detect.c
+index 2742f3500d..e673fedd18 100644
+--- a/libavfilter/vf_inference_detect.c
++++ b/libavfilter/vf_inference_detect.c
+@@ -309,7 +309,6 @@ static const AVOption inference_detect_options[] = {
+     { "dnn_backend",  "DNN backend for model execution", OFFSET(backend_type),    AV_OPT_TYPE_FLAGS,  { .i64 = 1},          0, 2,  FLAGS },
+     { "model",        "path to model file for network",  OFFSET(model),           AV_OPT_TYPE_STRING, { .str = NULL},       0, 0,  FLAGS },
+     { "model_proc",   "model preproc and postproc",      OFFSET(model_proc),      AV_OPT_TYPE_STRING, { .str = NULL},       0, 0,  FLAGS },
+-    { "object_class", "objective class",                 OFFSET(object_class),    AV_OPT_TYPE_STRING, { .str = NULL},       0, 0,  FLAGS },
+     { "device",       "running on device name",          OFFSET(device),          AV_OPT_TYPE_STRING, { .str = NULL},       0, 0,  FLAGS },
+     { "configs",      "configurations to backend",       OFFSET(infer_config),    AV_OPT_TYPE_STRING, { .str = NULL},       0, 0,  FLAGS },
+     { "interval",     "detect every Nth frame",          OFFSET(every_nth_frame), AV_OPT_TYPE_INT,    { .i64 = 1 },  1, 1024, FLAGS},
+diff --git a/libavfilter/vf_inference_infer.c b/libavfilter/vf_inference_infer.c
+new file mode 100755
+index 0000000000..e1ac33fd98
+--- /dev/null
++++ b/libavfilter/vf_inference_infer.c
+@@ -0,0 +1,337 @@
++/*
++ * This file is part of FFmpeg.
++ *
++ * FFmpeg is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * FFmpeg is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with FFmpeg; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++ */
++
++/**
++ * @file
++ * video inference filter used for generica infererence
++ */
++
++#include "libavutil/opt.h"
++#include "libavutil/mem.h"
++#include "libavutil/eval.h"
++#include "libavutil/avassert.h"
++#include "libavutil/pixdesc.h"
++#include "libavutil/mathematics.h"
++
++#include "formats.h"
++#include "internal.h"
++#include "avfilter.h"
++#include "filters.h"
++#include "libavcodec/avcodec.h"
++#include "libavformat/avformat.h"
++#include "libavutil/time.h"
++
++#include "inference_backend/ff_base_inference.h"
++
++#define OFFSET(x) offsetof(IEInferContext, x)
++#define FLAGS (AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_FILTERING_PARAM)
++
++static int flush_frame(AVFilterContext *ctx, AVFilterLink *outlink, int64_t pts, int64_t *out_pts);
++
++typedef struct IEInferContext {
++    const AVClass *class;
++
++    FFBaseInference *base;
++
++    FF_INFERENCE_OPTIONS
++
++    int    async_preproc;
++    int    backend_type;
++    int    already_flushed;
++} IEInferContext;
++
++static int query_formats(AVFilterContext *context)
++{
++    AVFilterFormats *formats_list;
++    const enum AVPixelFormat pixel_formats[] = { AV_PIX_FMT_YUV420P, AV_PIX_FMT_NV12,  AV_PIX_FMT_BGR24,
++                                                 AV_PIX_FMT_BGRA,    AV_PIX_FMT_BGR0,  AV_PIX_FMT_RGBP,
++                                                 AV_PIX_FMT_BGRA,    AV_PIX_FMT_VAAPI, AV_PIX_FMT_NONE};
++
++    formats_list = ff_make_format_list(pixel_formats);
++    if (!formats_list) {
++        av_log(context, AV_LOG_ERROR, "Could not create formats list\n");
++        return AVERROR(ENOMEM);
++    }
++
++    return ff_set_common_formats(context, formats_list);
++}
++
++static int config_input(AVFilterLink *inlink)
++{
++    int ret = 0;
++    AVFilterContext *ctx = inlink->dst;
++    IEInferContext *s = ctx->priv;
++    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(inlink->format);
++    if (desc == NULL)
++        return AVERROR(EINVAL);
++
++    FFInferenceParam param = { };
++    param = s->base->param;
++
++    if (desc->flags & AV_PIX_FMT_FLAG_HWACCEL) {
++        AVHWFramesContext *hw_frm_ctx = (AVHWFramesContext *)inlink->hw_frames_ctx->data;
++        AVHWDeviceContext *dev_ctx = (AVHWDeviceContext *)hw_frm_ctx->device_ref->data;
++#if CONFIG_VAAPI
++        param.vpp_device = VPP_DEVICE_HW;
++        param.opaque = (void *)((AVVAAPIDeviceContext *)dev_ctx->hwctx)->display;
++#endif
++        for (int i = 0; i < ctx->nb_outputs; i++) {
++            if (!ctx->outputs[i]->hw_frames_ctx)
++                ctx->outputs[i]->hw_frames_ctx = av_buffer_ref(inlink->hw_frames_ctx);
++        }
++    }
++
++    ret = av_base_inference_set_params(s->base, &param);
++
++    return ret;
++}
++
++static av_cold int infer_init(AVFilterContext *ctx)
++{
++    int ret;
++    IEInferContext *s = ctx->priv;
++    av_assert0(s->model);
++    FFInferenceParam param = { };
++
++    param.model           = s->model;
++    param.device          = s->device;
++    param.nireq           = s->nireq;
++    param.batch_size      = s->batch_size;
++    param.every_nth_frame = s->every_nth_frame;
++    param.threshold       = s->threshold;
++    param.is_full_frame   = 1;
++    param.infer_config    = s->infer_config;
++    param.model_proc      = s->model_proc;
++    param.opaque          = s->async_preproc ? (void *)MOCKER_PRE_PROC_MAGIC : 0;
++
++    s->base = av_base_inference_create(ctx->filter->name);
++    if (!s->base) {
++        av_log(ctx, AV_LOG_ERROR, "Could not create inference.\n");
++        return AVERROR(EINVAL);
++    }
++    ret = av_base_inference_init(s->base, &param);
++
++    return ret;
++}
++
++static av_cold void infer_uninit(AVFilterContext *ctx)
++{
++    IEInferContext *s = ctx->priv;
++
++    flush_frame(ctx, NULL, 0LL, NULL);
++
++    av_base_inference_release(s->base);
++}
++
++static int flush_frame(AVFilterContext *ctx, AVFilterLink *outlink, int64_t pts, int64_t *out_pts)
++{
++    int ret = 0;
++    IEInferContext *s = ctx->priv;
++
++    if (s->already_flushed)
++        return ret;
++
++    while (!av_base_inference_frame_queue_empty(ctx, s->base)) {
++        AVFrame *output = NULL;
++        av_base_inference_get_frame(ctx, s->base, &output);
++        if (output) {
++            if (outlink) {
++                ret = ff_filter_frame(outlink, output);
++                if (out_pts)
++                    *out_pts = output->pts + pts;
++            } else {
++                av_frame_free(&output);
++            }
++        }
++
++        av_base_inference_send_event(ctx, s->base, INFERENCE_EVENT_EOS);
++        av_usleep(5000);
++    }
++
++    s->already_flushed = 1;
++    return ret;
++}
++
++static int load_balance(AVFilterContext *ctx)
++{
++    AVFilterLink *inlink = ctx->inputs[0];
++    AVFilterLink *outlink = ctx->outputs[0];
++    IEInferContext *s = ctx->priv;
++    AVFrame *in = NULL, *output = NULL;
++    int64_t pts;
++    int ret, status;
++    int resource, got_frames = 0;
++    int get_frame_status;
++
++    FF_FILTER_FORWARD_STATUS_BACK(outlink, inlink);
++
++    // drain all processed frames
++    do {
++        get_frame_status = av_base_inference_get_frame(ctx, s->base, &output);
++        if (output) {
++            int ret_val = ff_filter_frame(outlink, output);
++            if (ret_val < 0)
++                return ret_val;
++
++            got_frames = 1;
++            output = NULL;
++        }
++    } while (get_frame_status == 0);
++
++    status = ff_outlink_get_status(inlink);
++    if (status)
++        resource = ff_inlink_queued_frames(inlink);
++    else
++        resource = av_base_inference_resource_status(ctx, s->base);
++
++    while (resource > 0) {
++        ret = ff_inlink_consume_frame(inlink, &in);
++        if (ret < 0)
++            return ret;
++        if (ret == 0)
++            break;
++        if (ret > 0) {
++            av_base_inference_send_frame(ctx, s->base, in);
++        }
++        resource--;
++    }
++
++    if (!status && got_frames)
++        return 0;
++
++    if (ff_inlink_acknowledge_status(inlink, &status, &pts)) {
++        if (status == AVERROR_EOF) {
++            int64_t out_pts = pts;
++
++            av_log(ctx, AV_LOG_INFO, "Get EOS.\n");
++            ret = flush_frame(ctx, outlink, pts, &out_pts);
++            ff_outlink_set_status(outlink, status, out_pts);
++            return ret;
++        }
++    }
++
++    FF_FILTER_FORWARD_WANTED(outlink, inlink);
++
++    return FFERROR_NOT_READY;
++}
++
++static int activate(AVFilterContext *ctx)
++{
++    AVFilterLink *inlink = ctx->inputs[0];
++    AVFilterLink *outlink = ctx->outputs[0];
++    IEInferContext *s = ctx->priv;
++    AVFrame *in = NULL, *output = NULL;
++    int64_t pts;
++    int ret, status;
++    int got_frame = 0;
++
++    if (av_load_balance_get())
++        return load_balance(ctx);
++
++    FF_FILTER_FORWARD_STATUS_BACK(outlink, inlink);
++
++    do {
++        int get_frame_status;
++        // drain all input frames
++        ret = ff_inlink_consume_frame(inlink, &in);
++        if (ret < 0)
++            return ret;
++        if (ret > 0)
++            av_base_inference_send_frame(ctx, s->base, in);
++
++        // drain all processed frames
++        do {
++            get_frame_status = av_base_inference_get_frame(ctx, s->base, &output);
++            if (output) {
++                int ret_val = ff_filter_frame(outlink, output);
++                if (ret_val < 0)
++                    return ret_val;
++
++                got_frame = 1;
++                output = NULL;
++            }
++        } while (get_frame_status == 0);
++    } while (ret > 0);
++
++    // if frame got, schedule to next filter
++    if (got_frame)
++        return 0;
++
++    if (ff_inlink_acknowledge_status(inlink, &status, &pts)) {
++        if (status == AVERROR_EOF) {
++            int64_t out_pts = pts;
++
++            av_log(ctx, AV_LOG_INFO, "Get EOS.\n");
++            ret = flush_frame(ctx, outlink, pts, &out_pts);
++            ff_outlink_set_status(outlink, status, out_pts);
++            return ret;
++        }
++    }
++
++    FF_FILTER_FORWARD_WANTED(outlink, inlink);
++
++    return FFERROR_NOT_READY;
++}
++
++static const AVOption inference_infer_options[] = {
++    { "dnn_backend",  "DNN backend for model execution", OFFSET(backend_type),    AV_OPT_TYPE_FLAGS,  { .i64 = 1},          0, 2,  FLAGS },
++    { "model",        "path to model file for network",  OFFSET(model),           AV_OPT_TYPE_STRING, { .str = NULL},       0, 0,  FLAGS },
++    { "model_proc",   "model preproc and postproc",      OFFSET(model_proc),      AV_OPT_TYPE_STRING, { .str = NULL},       0, 0,  FLAGS },
++    { "device",       "running on device name",          OFFSET(device),          AV_OPT_TYPE_STRING, { .str = NULL},       0, 0,  FLAGS },
++    { "configs",      "configurations to backend",       OFFSET(infer_config),    AV_OPT_TYPE_STRING, { .str = NULL},       0, 0,  FLAGS },
++    { "interval",     "infer every Nth frame",          OFFSET(every_nth_frame), AV_OPT_TYPE_INT,    { .i64 = 1 },  1, 1024, FLAGS},
++    { "nireq",        "inference request number",        OFFSET(nireq),           AV_OPT_TYPE_INT,    { .i64 = 1 },  1, 128,  FLAGS},
++    { "batch_size",   "batch size per infer",            OFFSET(batch_size),      AV_OPT_TYPE_INT,    { .i64 = 1 },  1, 1000, FLAGS},
++    { "threshold",    "threshod to filter output data",  OFFSET(threshold),       AV_OPT_TYPE_FLOAT,  { .dbl = 0.5}, 0, 1,    FLAGS},
++    { "async_preproc", "do asynchronous preproc in inference backend", OFFSET(async_preproc), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, FLAGS },
++
++    { NULL }
++};
++
++AVFILTER_DEFINE_CLASS(inference_infer);
++
++static const AVFilterPad infer_inputs[] = {
++    {
++        .name          = "default",
++        .type          = AVMEDIA_TYPE_VIDEO,
++        .config_props  = config_input,
++    },
++    { NULL }
++};
++
++static const AVFilterPad infer_outputs[] = {
++    {
++        .name          = "default",
++        .type          = AVMEDIA_TYPE_VIDEO,
++    },
++    { NULL }
++};
++
++AVFilter ff_vf_inference_infer = {
++    .name          = "infer",
++    .description   = NULL_IF_CONFIG_SMALL("Gerneric Video Inference Filter."),
++    .priv_size     = sizeof(IEInferContext),
++    .query_formats = query_formats,
++    .activate      = activate,
++    .init          = infer_init,
++    .uninit        = infer_uninit,
++    .inputs        = infer_inputs,
++    .outputs       = infer_outputs,
++    .priv_class    = &inference_infer_class,
++    .flags_internal = FF_FILTER_FLAG_HWFRAME_AWARE,
++};
+diff --git a/libavfilter/vf_inference_python.c b/libavfilter/vf_inference_python.c
+new file mode 100755
+index 0000000000..c73c4cac32
+--- /dev/null
++++ b/libavfilter/vf_inference_python.c
+@@ -0,0 +1,334 @@
++/*
++ * This file is part of FFmpeg.
++ *
++ * FFmpeg is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU Lesser General Public
++ * License as published by the Free Software Foundation; either
++ * version 2.1 of the License, or (at your option) any later version.
++ *
++ * FFmpeg is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
++ * Lesser General Public License for more details.
++ *
++ * You should have received a copy of the GNU Lesser General Public
++ * License along with FFmpeg; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
++ */
++
++/**
++ * @file
++ * filter calls python script to do post processing for data from inference filter
++ */
++
++#include <Python.h>
++
++#include "libavutil/avassert.h"
++#include "libavutil/eval.h"
++#include "libavutil/mathematics.h"
++#include "libavutil/mem.h"
++#include "libavutil/opt.h"
++#include "libavutil/pixdesc.h"
++
++#include "avfilter.h"
++#include "filters.h"
++#include "formats.h"
++#include "internal.h"
++#include "libavcodec/avcodec.h"
++#include "libavformat/avformat.h"
++#include "libavutil/time.h"
++
++#include "inference_backend/ff_base_inference.h"
++
++#define OFFSET(x) offsetof(VAPythonContext, x)
++#define FLAGS (AV_OPT_FLAG_VIDEO_PARAM | AV_OPT_FLAG_FILTERING_PARAM)
++
++typedef struct PythonContext {
++    int initialized;
++    PyGILState_STATE state;
++} PythonContext;
++
++typedef struct VAPythonContext {
++    const AVClass *class;
++
++    char *ffmodule_path;
++    char *custom_script;
++    char *function_name;
++
++    PythonContext py_context;
++    PyObject *py_videoframe_class;
++    PyObject *py_class;
++    PyObject *py_function;
++} VAPythonContext;
++
++static int query_formats(AVFilterContext *context) {
++    AVFilterFormats *formats_list;
++    const enum AVPixelFormat pixel_formats[] = {AV_PIX_FMT_BGR24, AV_PIX_FMT_RGB24, AV_PIX_FMT_BGRA,
++                                                AV_PIX_FMT_BGR0,  AV_PIX_FMT_NV12,  AV_PIX_FMT_NONE};
++
++    formats_list = ff_make_format_list(pixel_formats);
++    if (!formats_list) {
++        av_log(context, AV_LOG_ERROR, "Could not create formats list\n");
++        return AVERROR(ENOMEM);
++    }
++
++    return ff_set_common_formats(context, formats_list);
++}
++
++static int config_input(AVFilterLink *inlink) {
++    int ret = 0;
++    // AVFilterContext *ctx = inlink->dst;
++    // VAPythonContext *s = ctx->priv;
++    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(inlink->format);
++    if (desc == NULL)
++        return AVERROR(EINVAL);
++
++    return ret;
++}
++
++static inline int py_append_module_path(PyObject *sys_path, const char *module_path) {
++    PyObject *pyPath;
++
++    pyPath = PyUnicode_FromString(module_path);
++    PyList_Append(sys_path, pyPath);
++    Py_DECREF(pyPath);
++
++    fprintf(stderr, "append path %s!\n", module_path);
++
++    if (PyErr_Occurred()) {
++        PyErr_Print();
++        return -1;
++    }
++
++    return 0;
++}
++
++static inline PyObject *py_import_module(const char *module_name) {
++    PyObject *py_name = PyUnicode_FromString(module_name);
++    PyObject *py_module = PyImport_Import(py_name);
++
++    Py_DECREF(py_name);
++
++    fprintf(stderr, "import module %s!\n", module_name);
++
++    if (!py_module && PyErr_Occurred()) {
++        PyErr_Print();
++        fprintf(stderr, "Cannot find module %s!\n", module_name);
++        return NULL;
++    }
++
++    return py_module;
++}
++
++static inline PyObject *py_get_attr_string(PyObject *module, const char *string) {
++    PyObject *py_attr = PyObject_GetAttrString(module, string);
++
++    if (!py_attr && PyErr_Occurred()) {
++        PyErr_Print();
++        fprintf(stderr, "Get %s failed!\n", string);
++        return NULL;
++    }
++
++    return py_attr;
++}
++
++static av_cold int va_python_init(AVFilterContext *ctx) {
++    int ret = 0;
++    int initialized = 0;
++    PyGILState_STATE state = PyGILState_UNLOCKED;
++    VAPythonContext *s = ctx->priv;
++    PyObject *sys_path;
++    PyObject *ffmodule, *cusmodule;
++    PyObject *videoframe_class, *custom_class = NULL, *custom_func = NULL;
++    const char *custom_dir, *last_slash, *suffix, *filename;
++    size_t len;
++
++    static wchar_t tmp[] = L"";
++    static wchar_t *empty_argv[] = {tmp};
++
++    if (!s->ffmodule_path || !s->custom_script) {
++        av_log(ctx, AV_LOG_ERROR, "path for ffmpeg and custom python module are needed.");
++        return AVERROR(EINVAL);
++    }
++
++    if (!s->function_name) {
++        av_log(ctx, AV_LOG_ERROR, "function name cannot be null.");
++        return AVERROR(EINVAL);
++    }
++
++    // split user-specified python script into path and name
++    last_slash = strrchr(s->custom_script, '/');
++    if (!last_slash) {
++        av_log(ctx, AV_LOG_ERROR, "full path required.");
++        return AVERROR(EINVAL);
++    }
++    // get path of dir
++    len = (size_t)(last_slash - s->custom_script);
++    custom_dir = av_mallocz(len + 1);
++    if (!custom_dir)
++        return AVERROR(ENOMEM);
++    strncpy((char *)custom_dir, s->custom_script, len);
++    // get filename
++    suffix = strrchr(s->custom_script, '.');
++    if (suffix) {
++        len = suffix - last_slash - 1;
++        filename = av_mallocz(len + 1);
++        if (!filename) {
++            av_freep(&custom_dir);
++            return AVERROR(ENOMEM);
++        }
++        strncpy((char *)filename, last_slash + 1, len);
++    } else {
++        len = 0;
++        filename = last_slash + 1;
++    }
++
++    // init context
++    initialized = Py_IsInitialized();
++    if (initialized) {
++        state = PyGILState_Ensure();
++    } else {
++        Py_Initialize();
++    }
++
++    PySys_SetArgv(1, empty_argv);
++
++    // append module path to sys path
++    sys_path = PySys_GetObject("path");
++    if ((ret = py_append_module_path(sys_path, s->ffmodule_path)) < 0)
++        goto exit;
++    if ((ret = py_append_module_path(sys_path, custom_dir)) < 0)
++        goto exit;
++
++    // import modules by name
++    ffmodule = py_import_module("ffmpeg");
++    cusmodule = py_import_module(filename);
++    if (!ffmodule || !cusmodule) {
++        ret = AVERROR(EINVAL);
++        goto exit;
++    }
++
++    videoframe_class = py_get_attr_string(ffmodule, "VideoFrame");
++    custom_func = py_get_attr_string(cusmodule, s->function_name);
++    if (!videoframe_class || !custom_func) {
++        ret = AVERROR(EINVAL);
++        goto exit;
++    }
++
++    s->py_context.initialized = initialized;
++    s->py_context.state = state;
++    s->py_videoframe_class = videoframe_class;
++    s->py_function = custom_func;
++
++exit:
++    if (ffmodule)
++        Py_DECREF(ffmodule);
++
++    if (cusmodule)
++        Py_DECREF(cusmodule);
++
++    av_freep(&custom_dir);
++    if (len != 0)
++        av_freep(&filename);
++    return ret;
++}
++
++static av_cold void call_python(AVFrame *frame, PyObject *py_videoframe_class, PyObject *py_function) {
++    void *ptr = (void *)frame;
++    PyObject *pyFrame = PyObject_CallFunctionObjArgs(py_videoframe_class, PyLong_FromVoidPtr(ptr), NULL);
++    if (!pyFrame && PyErr_Occurred()) {
++        PyErr_Print();
++        return;
++    }
++
++    {
++        PyObject *pyFunc = py_function;
++        if (pyFunc && PyCallable_Check(pyFunc)) {
++            PyObject *args = Py_BuildValue("(O)", pyFrame);
++            PyObject *pValue = PyObject_CallObject(pyFunc, args);
++            if (pValue != NULL) {
++                // av_log(NULL, AV_LOG_ERROR, "Result of call: %ld\n", PyLong_AsLong(pValue));
++                Py_DECREF(pValue);
++            } else {
++                if (PyErr_Occurred())
++                    PyErr_Print();
++            }
++        } else {
++            if (PyErr_Occurred())
++                PyErr_Print();
++            fprintf(stderr, "Cannot find function get_width\n");
++        }
++    }
++}
++
++static av_cold void va_python_uninit(AVFilterContext *ctx) {
++    VAPythonContext *s = ctx->priv;
++
++    if (s->py_videoframe_class)
++        Py_DECREF(s->py_videoframe_class);
++
++    if (s->py_function)
++        Py_DECREF(s->py_function);
++
++    if (s->py_class)
++        Py_DECREF(s->py_class);
++
++    if (s->py_context.initialized) {
++        PyGILState_Release(s->py_context.state);
++    } else {
++        PyEval_SaveThread();
++        // Py_Finalize();
++    }
++}
++
++static int filter_frame(AVFilterLink *inlink, AVFrame *frame) {
++    AVFilterContext *ctx = inlink->dst;
++    VAPythonContext *s = ctx->priv;
++    AVFilterLink *outlink = inlink->dst->outputs[0];
++
++    PyGILState_STATE state = PyGILState_Ensure();
++
++    call_python(frame, s->py_videoframe_class, s->py_function);
++
++    PyGILState_Release(state);
++
++    return ff_filter_frame(outlink, frame);
++}
++
++static const AVOption inference_python_options[] = {
++    { "ffmodule_path", "path to ffmpeg python module", OFFSET(ffmodule_path), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, FLAGS },
++    { "custom_script", "path to custom python script", OFFSET(custom_script), AV_OPT_TYPE_STRING, {.str = NULL}, 0, 0, FLAGS },
++    { "function_name", "callback function name, default: process_frame",
++        OFFSET(function_name), AV_OPT_TYPE_STRING, {.str = "process_frame"}, 0, 0, FLAGS },
++    { NULL } };
++
++AVFILTER_DEFINE_CLASS(inference_python);
++
++static const AVFilterPad va_python_inputs[] = {
++    {
++        .name = "default",
++        .type = AVMEDIA_TYPE_VIDEO,
++        .config_props = config_input,
++        .filter_frame = filter_frame,
++    },
++    { NULL } };
++
++static const AVFilterPad va_python_outputs[] = {
++    {
++        .name = "default",
++        .type = AVMEDIA_TYPE_VIDEO,
++    },
++    { NULL }};
++
++AVFilter ff_vf_inference_python = {
++    .name = "python",
++    .description = NULL_IF_CONFIG_SMALL("Video analytics post processing filter using Python."),
++    .priv_size = sizeof(VAPythonContext),
++    .query_formats = query_formats,
++    .init = va_python_init,
++    .uninit = va_python_uninit,
++    .inputs = va_python_inputs,
++    .outputs = va_python_outputs,
++    .priv_class = &inference_python_class,
++    // .flags_internal = FF_FILTER_FLAG_HWFRAME_AWARE,
++};
+diff --git a/libavutil/frame.c b/libavutil/frame.c
+index 90a586a2c9..17cb536cb3 100755
+--- a/libavutil/frame.c
++++ b/libavutil/frame.c
+@@ -352,6 +352,8 @@ static int frame_copy_props(AVFrame *dst, const AVFrame *src, int force_copy)
+     dst->palette_has_changed    = src->palette_has_changed;
+     dst->sample_rate            = src->sample_rate;
+     dst->opaque                 = src->opaque;
++    dst->tm_in                  = src->tm_in;
++    dst->tm_out                 = src->tm_out;
+ #if FF_API_PKT_PTS
+ FF_DISABLE_DEPRECATION_WARNINGS
+     dst->pkt_pts                = src->pkt_pts;
+@@ -390,7 +392,7 @@ FF_ENABLE_DEPRECATION_WARNINGS
+             && (src->width != dst->width || src->height != dst->height))
+             continue;
+         if (sd_src->type == AV_FRAME_DATA_INFERENCE_CLASSIFICATION ||
+-            sd_src->type == AV_FRAME_DATA_INFERENCE_DETECTION)
++            sd_src->type == AV_FRAME_DATA_INFERENCE_DETECTION || sd_src->type == AV_FRAME_DATA_INFERENCE_INFER)
+             keep_ref = 1;
+         if (force_copy && !keep_ref) {
+             sd_dst = av_frame_new_side_data(dst, sd_src->type,
+@@ -842,6 +844,7 @@ const char *av_frame_side_data_name(enum AVFrameSideDataType type)
+     case AV_FRAME_DATA_ICC_PROFILE:                 return "ICC profile";
+     case AV_FRAME_DATA_INFERENCE_CLASSIFICATION:    return "Inference classification metadata";
+     case AV_FRAME_DATA_INFERENCE_DETECTION:         return "Inference detection metadata";
++    case AV_FRAME_DATA_INFERENCE_INFER:             return "Inference tensor metadata";
+ #if FF_API_FRAME_QP
+     case AV_FRAME_DATA_QP_TABLE_PROPERTIES:         return "QP table properties";
+     case AV_FRAME_DATA_QP_TABLE_DATA:               return "QP table data";
+diff --git a/libavutil/frame.h b/libavutil/frame.h
+index d2f39eafd0..148393cafb 100755
+--- a/libavutil/frame.h
++++ b/libavutil/frame.h
+@@ -146,6 +146,8 @@ enum AVFrameSideDataType {
+ 
+     AV_FRAME_DATA_INFERENCE_DETECTION,
+ 
++    AV_FRAME_DATA_INFERENCE_INFER,
++
+ #if FF_API_FRAME_QP
+     /**
+      * Implementation-specific description of the format of AV_FRAME_QP_TABLE_DATA.
+@@ -676,6 +678,8 @@ typedef struct AVFrame {
+      * for the target frame's private_ref field.
+      */
+     AVBufferRef *private_ref;
++
++    uint64_t tm_in, tm_out;
+ } AVFrame;
+ 
+ #if FF_API_FRAME_GET_SET
+diff --git a/python/ffmpeg/__init__.py b/python/ffmpeg/__init__.py
+new file mode 100755
+index 0000000000..74da718e5b
+--- /dev/null
++++ b/python/ffmpeg/__init__.py
+@@ -0,0 +1,7 @@
++# ==============================================================================
++# Copyright (C) 2018-2020 Intel Corporation
++#
++# SPDX-License-Identifier: MIT
++# ==============================================================================
++
++from .video_frame import VideoFrame
+diff --git a/python/ffmpeg/avutil.py b/python/ffmpeg/avutil.py
+new file mode 100755
+index 0000000000..4a573e4318
+--- /dev/null
++++ b/python/ffmpeg/avutil.py
+@@ -0,0 +1,15 @@
++# ==============================================================================
++# Copyright (C) 2018-2020 Intel Corporation
++#
++# SPDX-License-Identifier: MIT
++# ==============================================================================
++
++import ctypes
++from .ffmpeg_decls import AV_FRAME_POINTER, AVFrameSideDataType, AV_FRAME_SIDE_DATA_POINTER
++
++# libavutil
++libavutil = ctypes.CDLL("libavutil.so.56.31.100")
++
++libavutil.av_frame_get_side_data.argtypes = [
++    AV_FRAME_POINTER, AVFrameSideDataType]
++libavutil.av_frame_get_side_data.restype = AV_FRAME_SIDE_DATA_POINTER
+diff --git a/python/ffmpeg/ffmpeg_decls.py b/python/ffmpeg/ffmpeg_decls.py
+new file mode 100755
+index 0000000000..cb91c2ce74
+--- /dev/null
++++ b/python/ffmpeg/ffmpeg_decls.py
+@@ -0,0 +1,192 @@
++# ==============================================================================
++# Copyright (C) 2018-2020 Intel Corporation
++#
++# SPDX-License-Identifier: MIT
++# ==============================================================================
++
++from ctypes import *
++
++STRING = c_char_p
++
++# Enum AVPictureType
++AVPictureType = c_int
++AV_PICTURE_TYPE_NONE = 0
++AV_PICTURE_TYPE_I = 1
++AV_PICTURE_TYPE_P = 2
++AV_PICTURE_TYPE_B = 3
++AV_PICTURE_TYPE_S = 4
++AV_PICTURE_TYPE_SI = 5
++AV_PICTURE_TYPE_SP = 6
++AV_PICTURE_TYPE_BI = 7
++
++# Enum AVFrameSideDataType
++AVFrameSideDataType = c_int
++AV_FRAME_DATA_PANSCAN = 0
++AV_FRAME_DATA_A53_CC = 1
++AV_FRAME_DATA_STEREO3D = 2
++AV_FRAME_DATA_MATRIXENCODING = 3
++AV_FRAME_DATA_DOWNMIX_INFO = 4
++AV_FRAME_DATA_REPLAYGAIN = 5
++AV_FRAME_DATA_DISPLAYMATRIX = 6
++AV_FRAME_DATA_AFD = 7
++AV_FRAME_DATA_MOTION_VECTORS = 8
++AV_FRAME_DATA_SKIP_SAMPLES = 9
++AV_FRAME_DATA_AUDIO_SERVICE_TYPE = 10
++AV_FRAME_DATA_MASTERING_DISPLAY_METADATA = 11
++AV_FRAME_DATA_GOP_TIMECODE = 12
++AV_FRAME_DATA_SPHERICAL = 13
++AV_FRAME_DATA_CONTENT_LIGHT_LEVEL = 14
++AV_FRAME_DATA_ICC_PROFILE = 15
++AV_FRAME_DATA_INFERENCE_CLASSIFICATION = 16
++AV_FRAME_DATA_INFERENCE_DETECTION = 17
++AV_FRAME_DATA_INFERENCE_INFER = 18
++AV_FRAME_DATA_QP_TABLE_PROPERTIES = 19 #if FF_API_FRAME_QP
++AV_FRAME_DATA_QP_TABLE_DATA = 20 #if FF_API_FRAME_QP
++AV_FRAME_DATA_S12M_TIMECODE = 21
++AV_FRAME_DATA_DYNAMIC_HDR_PLUS = 22
++AV_FRAME_DATA_REGIONS_OF_INTEREST = 23
++
++
++AVPixelFormat = c_int
++AV_PIX_FMT_NONE = -1
++AV_PIX_FMT_RGB24 = 2
++AV_PIX_FMT_BGR24 = 3
++AV_PIX_FMT_NV12 = 23
++AV_PIX_FMT_BGRA = 29
++AV_PIX_FMT_BGR0 = 124
++
++class AVRational(Structure):
++    _fields_ = [('num', c_int),
++                ('den', c_int)]
++
++class AVBufferRef(Structure):
++    _fields_ = [('buffer', c_void_p), # AVBuffer *
++                ('data', POINTER(c_uint8)),
++                ('size', c_int)]
++
++AV_BUFFER_REF_POINTER = POINTER(AVBufferRef)
++
++class AVDictionary(Structure):
++    _fields_ = [('count', c_int),
++                ('elems', c_void_p)] # AVDictionaryEntry *
++
++class AVFrameSideData(Structure):
++    _fields_ = [('type', AVFrameSideDataType),
++                ('data', POINTER(c_uint8)),
++                ('size', c_int),
++                ('metadata', POINTER(AVDictionary)),
++                ('buf', POINTER(AVBufferRef))]
++
++AV_FRAME_SIDE_DATA_POINTER = POINTER(AVFrameSideData)
++
++class AVFrame(Structure):
++    _fields_ = [('data', POINTER(c_uint8) * 8),
++                ('linesize', c_int * 8),
++                ('extended_data', c_void_p), # uint8_t **extended_data
++                ('width', c_int),
++                ('height', c_int),
++                ('nb_samples', c_int),
++                ('format', c_int),
++                ('key_frame', c_int),
++                ('pict_type', AVPictureType),
++                ('sample_aspect_ratio', AVRational),
++                ('pts', c_int64),
++                ('pkt_pts', c_int64), # FF_API_PKT_PTS(LIBAVUTIL_VERSION_MAJOR < 57)
++                ('pkt_dts', c_int64),
++                ('coded_picture_number', c_int),
++                ('display_picture_number', c_int),
++                ('quality', c_int),
++                ('opaque', c_void_p),
++                ('error', c_uint64 * 8), # FF_API_ERROR_FRAME
++                ('repeat_pict', c_int),
++                ('interlaced_frame', c_int),
++                ('top_field_first', c_int),
++                ('palette_has_changed', c_int),
++                ('reordered_opaque', c_int64),
++                ('sample_rate', c_int),
++                ('channel_layout', c_uint64),
++                ('buf', POINTER(AVBufferRef) * 8),
++                ('extended_buf', POINTER(POINTER(AVBufferRef))),
++                ('nb_extended_buf', c_int),
++                ('side_data', POINTER(POINTER(AVFrameSideData))),
++                ('nb_side_data', c_int),
++                ('flags', c_int),
++                ('color_range', c_int),
++                ('color_primaries', c_int),
++                ('color_trc', c_int),
++                ('colorspace', c_int),
++                ('chroma_location', c_int),
++                ('best_effort_timestamp', c_int64),
++                ('pkt_pos', c_int64),
++                ('pkt_duration', c_int64),
++                ('metadata', POINTER(AVDictionary)),
++                ('decode_error_flags', c_int),
++                ('channels', c_int),
++                ('pkt_size', c_int),
++                ('qscale_table', POINTER(c_int8)), # FF_API_FRAME_QP
++                ('qstride', c_int), # FF_API_FRAME_QP
++                ('qscale_type', c_int), # FF_API_FRAME_QP
++                ('qp_table_buf', POINTER(AVBufferRef)), # FF_API_FRAME_QP
++                ('hw_frames_ctx', POINTER(AVBufferRef)),
++                ('opaque_ref', POINTER(AVBufferRef)),
++                ('crop_top', c_size_t),
++                ('crop_bottom', c_size_t),
++                ('crop_left', c_size_t),
++                ('crop_right', c_size_t),
++                ('private_ref', POINTER(AVBufferRef))]
++
++AV_FRAME_POINTER = POINTER(AVFrame)
++
++class IETensorMeta(Structure):
++    _fields_ = [('precision', c_char_p),
++                ('ranks', c_size_t),
++                ('dims', c_size_t * 8),
++                ('layout', c_char_p),
++                ('layer_name', c_char_p),
++                ('model_name', c_char_p),
++                ('buffer', AV_BUFFER_REF_POINTER)]
++
++INFER_TENSOR_POINTER = POINTER(IETensorMeta)
++
++class FFVideoRegionOfInterestMeta(Structure):
++    _fields_ = [('type_name', c_char * 16),
++                ('index', c_uint),
++                ('x', c_uint),
++                ('y', c_uint),
++                ('w', c_uint),
++                ('h', c_uint)]
++
++class InferDetection(Structure):
++    _fields_ = [('x_min', c_float),
++                ('y_min', c_float),
++                ('x_max', c_float),
++                ('y_max', c_float),
++                ('confidence', c_float),
++                ('label_id', c_int),
++                ('label_buf', AV_BUFFER_REF_POINTER),
++                ('roi_meta', FFVideoRegionOfInterestMeta),
++                ('tensor', IETensorMeta)]
++
++INFER_DETECTION_POINTER = POINTER(InferDetection)
++
++class BBoxesArray(Structure):
++    _fields_ = [('bbox', POINTER(INFER_DETECTION_POINTER)),
++                ('num', c_int)]
++
++BBOXES_ARRAY_POINTER = POINTER(BBoxesArray)
++
++class InferDetectionMeta(Structure):
++    _fields_ = [('bboxes', BBOXES_ARRAY_POINTER)]
++
++INFER_DETECTION_META_POINTER = POINTER(InferDetectionMeta)
++
++class TensorsArray(Structure):
++    _fields_ = [('tensors', POINTER(INFER_TENSOR_POINTER)),
++                ('num', c_int)]
++
++TENSORS_ARRAY_POINTER = POINTER(TensorsArray)
++
++class InferTensorMeta(Structure):
++    _fields_ = [('t_array', TENSORS_ARRAY_POINTER)]
++
++INFER_TENSOR_META_POINTER = POINTER(InferTensorMeta)
+diff --git a/python/ffmpeg/video_frame.py b/python/ffmpeg/video_frame.py
+new file mode 100755
+index 0000000000..d7d8096b3b
+--- /dev/null
++++ b/python/ffmpeg/video_frame.py
+@@ -0,0 +1,122 @@
++# ==============================================================================
++# Copyright (C) 2018-2020 Intel Corporation
++#
++# SPDX-License-Identifier: MIT
++# ==============================================================================
++
++import ctypes
++import numpy
++from contextlib import contextmanager
++from typing import List
++
++from .ffmpeg_decls import AVFrame, AV_FRAME_POINTER, \
++    AVFrameSideData, \
++    AVFrameSideDataType, AV_FRAME_DATA_INFERENCE_INFER, \
++    AVPixelFormat, AV_PIX_FMT_NV12, AV_PIX_FMT_BGRA, AV_PIX_FMT_BGR0, \
++    InferTensorMeta, INFER_TENSOR_META_POINTER, \
++    IETensorMeta, INFER_TENSOR_POINTER
++
++from .avutil import libavutil
++
++class Tensor:
++    def __init__(self, infer_tensor_p : INFER_TENSOR_POINTER):
++        self.__infer_p = infer_tensor_p
++        if not self.__infer_p:
++            raise ValueError("Tensor: infer_detect_ptr passed is nullptr")
++        self.__tensor = self.__infer_p.contents
++
++    def get_dims(self)->list:
++        dims = list(self.__tensor.dims)
++        rank = int(self.__tensor.ranks)
++        return dims[:rank]
++
++    def get_layout(self)->str:
++        return str(self.__tensor.layout, 'utf-8', 'ignore')
++
++    def get_precision(self)->str:
++        return str(self.__tensor.precision, 'utf-8', 'ignore')
++
++    def get_layer_name(self)->str:
++        return str(self.__tensor.layer_name, 'utf-8', 'ignore')
++
++    def get_model_name(self)->str:
++        return str(self.__tensor.model_name, 'utf-8', 'ignore')
++
++    def data(self) -> numpy.ndarray:
++        precision = str(self.__tensor.precision, 'utf-8', 'ignore')
++        if precision == "FP32":
++            view = numpy.float32
++        elif precision == "U8":
++            view = numpy.uint8
++        else:
++            raise ValueError("Tensor: precision unsupported")
++        av_bufferref_p = self.__tensor.buffer
++        if not av_bufferref_p:
++            return None
++        data_ptr = av_bufferref_p.contents.data
++        nbytes = av_bufferref_p.contents.size
++        array_type = ctypes.c_ubyte * int(nbytes)
++        return numpy.ctypeslib.as_array(array_type.from_address(ctypes.addressof(data_ptr.contents))).view(dtype=view)
++
++class VideoFrame:
++    def __init__(self, av_frame_addr):
++        self.__frame_p = ctypes.cast(av_frame_addr, AV_FRAME_POINTER)
++        self.__width = self.__frame_p.contents.width
++        self.__height = self.__frame_p.contents.height
++        self.__init_tensors()
++
++    ## @brief Get image width of this VideoFrame
++    #  @return width of the image
++    def get_width(self):
++        return self.__width
++
++    ## @brief Get image width of this VideoFrame
++    #  @return height of the image
++    def get_height(self):
++        return self.__height
++
++    ## @brief Get Tensor objects attached to VideoFrame
++    #  @return list of Tensor objects attached to VideoFrame
++    def get_tensors(self) -> List[Tensor]:
++        return self.__tensors[:] # copy list
++
++    @contextmanager
++    def data(self) -> numpy.ndarray:
++        pix_fmt = self.__frame_p.contents.format
++        w = self.__width
++        h = self.__height
++        channel = 3
++        if pix_fmt == AV_PIX_FMT_NV12:
++            h = int(h * 1.5)
++        elif pix_fmt == AV_PIX_FMT_BGRA or pix_fmt == AV_PIX_FMT_BGR0:
++            channel = 4
++        else:
++            raise RuntimeError("VideoFrame.data: Unsupported format")
++
++        size = w * h * channel
++        _data_ = self.__frame_p.contents.data[0]
++        data = ctypes.cast(_data_, ctypes.POINTER(ctypes.c_uint8 * size)).contents
++
++        try:
++            yield numpy.ndarray((h, w, channel), buffer=data, dtype=numpy.uint8)
++        except TypeError as e:
++            raise e
++
++    def __init_tensors(self):
++        side_data_p = libavutil.av_frame_get_side_data(self.__frame_p, AV_FRAME_DATA_INFERENCE_INFER)
++        if not side_data_p:
++            return
++        infer_meta_p = ctypes.cast(side_data_p.contents.data, INFER_TENSOR_META_POINTER)
++        if not infer_meta_p:
++            return
++        t_array_p = infer_meta_p.contents.t_array
++        if not t_array_p:
++            return
++        tensor_array_p = t_array_p.contents.tensors
++        number = t_array_p.contents.num
++        if not tensor_array_p or not number:
++            return
++        self.__tensors = list()
++        for i in range(number):
++            infer_tensor_p = tensor_array_p[i]
++            self.__tensors.append(Tensor(infer_tensor_p))
+-- 
+2.17.1
+
