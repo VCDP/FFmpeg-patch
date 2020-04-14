@@ -294,15 +294,15 @@ RUN cd neo && \
     dpkg-deb -x intel-ocloc_19.41.14441_amd64.deb   /home/build/
 
 # ARGS to download specific versions of openvino, uncomment the one to download
-#R2
-#ARG OPENVINO_BUNDLE=l_openvino_toolkit_p_2019.2.242
-#ARG OPENVINO_URL=http://registrationcenter-download.intel.com/akdlm/irc_nas/15693/l_openvino_toolkit_p_2019.2.242.tgz
 #R3
 #ARG OPENVINO_BUNDLE=l_openvino_toolkit_p_2019.3.334
 #ARG OPENVINO_URL=http://registrationcenter-download.intel.com/akdlm/irc_nas/15944/l_openvino_toolkit_p_2019.3.334.tgz
 # 2020.1
-ARG OPENVINO_BUNDLE=l_openvino_toolkit_p_2020.1.023
-ARG OPENVINO_URL=http://registrationcenter-download.intel.com/akdlm/irc_nas/16345/l_openvino_toolkit_p_2020.1.023.tgz
+#ARG OPENVINO_BUNDLE=l_openvino_toolkit_p_2020.1.023
+#ARG OPENVINO_URL=http://registrationcenter-download.intel.com/akdlm/irc_nas/16345/l_openvino_toolkit_p_2020.1.023.tgz
+# 2020.2
+ARG OPENVINO_BUNDLE=l_openvino_toolkit_p_2020.2.120
+ARG OPENVINO_URL=http://registrationcenter-download.intel.com/akdlm/irc_nas/16612/l_openvino_toolkit_p_2020.2.120.tgz
 
 #Install OpenVino dependencies
 RUN  DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends cpio joe nano sudo unzip wget less \
@@ -351,15 +351,6 @@ ENV OpenCV_DIR=/opt/intel/openvino/opencv/share/OpenCV
 ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/intel/openvino/deployment_tools/ngraph/lib:/opt/intel/opencl:$HDDL_INSTALL_DIR/lib:/opt/intel/openvino/deployment_tools/inference_engine/external/gna/lib:/opt/intel/openvino/deployment_tools/inference_engine/external/mkltiny_lnx/lib:/opt/intel/openvino/deployment_tools/inference_engine/external/tbb/lib:/opt/intel/openvino/openvx/lib:$IE_PLUGINS_PATH
 RUN rm -rf /var/lib/apt/lists/*;
 
-# New version C API
-ARG DLDT_C_API_REPO=https://raw.githubusercontent.com/VCDP/FFmpeg-patch/ffmpeg4.2_va/thirdparty/dldt-c-api/source/v2.0.1.tar.gz
-RUN wget -O - ${DLDT_C_API_REPO} | tar xz && \
-    cd dldt-c_api-2.0.1 && \
-    mkdir -p build && cd build && \
-    cmake -DENABLE_AVX512F=OFF .. && \
-    make -j8 && \
-    make install && \
-    make install DESTDIR=/home/build
 
 # Build librdkafka
 ARG LIBRDKAFKA_VER=0.11.6
@@ -374,21 +365,21 @@ RUN wget -O - ${LIBRDKAFKA_REPO} | tar xz && \
     make install;
 
 # Build libjson-c
-ARG LIBJSONC_VER=0.13.1-20180305
-ARG LIBJSONC_REPO=https://github.com/json-c/json-c/archive/json-c-${LIBJSONC_VER}.tar.gz
-
-RUN wget -O - ${LIBJSONC_REPO} | tar xz && \
-    cd json-c-json-c-${LIBJSONC_VER} && \
-    sh autogen.sh && \
-    ./configure --prefix=/usr --libdir=/usr/lib/x86_64-linux-gnu && \
-    make -j8 && \
-    make install DESTDIR="/home/build" && \
-    make install;
+# ARG LIBJSONC_VER=0.13.1-20180305
+# ARG LIBJSONC_REPO=https://github.com/json-c/json-c/archive/json-c-${LIBJSONC_VER}.tar.gz
+ 
+# RUN wget -O - ${LIBJSONC_REPO} | tar xz && \
+#     cd json-c-json-c-${LIBJSONC_VER} && \
+#     sh autogen.sh && \
+#     ./configure --prefix=/usr --libdir=/usr/lib/x86_64-linux-gnu && \
+#     make -j8 && \
+#     make install DESTDIR="/home/build" && \
+#     make install;
 
 ARG OPENCV_VER=4.1.0
 ARG OPENCV_REPO=https://github.com/opencv/opencv/archive/${OPENCV_VER}.tar.gz
 
-RUN  DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y -q --no-install-recommends libgtk2.0-dev pkg-config libavcodec-dev libavformat-dev libswscale-dev python-dev python-numpy
+RUN  DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y -q --no-install-recommends libjson-c-dev libgtk2.0-dev pkg-config libavcodec-dev libavformat-dev libswscale-dev python-dev python-numpy
 
 RUN wget ${OPENCV_REPO} && \
     tar -zxvf ${OPENCV_VER}.tar.gz && \
@@ -403,16 +394,14 @@ RUN wget ${OPENCV_REPO} && \
 ENV CPATH=$CPATH:/usr/local/include/opencv4/
 
 # Fetch FFmpeg source
-RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y -q --no-install-recommends libass-dev libfreetype6-dev libvdpau-dev libsdl2-dev libxcb1-dev libxcb-shm0-dev libxcb-xfixes0-dev zlib1g-dev libssl-dev ssh-client
+ENV IE_PATH=/opt/intel/openvino/deployment_tools/inference_engine
+RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y -q --no-install-recommends libass-dev libfreetype6-dev libvdpau-dev libsdl2-dev libxcb1-dev libxcb-shm0-dev libxcb-xfixes0-dev zlib1g-dev libssl-dev ssh-client python3-dev
 
 ADD patch /root/patch
 ARG FFMPEG_VER=n4.2
 ARG FFMPEG_REPO=https://github.com/FFmpeg/FFmpeg/archive/${FFMPEG_VER}.tar.gz
-ARG FFMPEG_VA_PATCH_V04_001=https://raw.githubusercontent.com/VCDP/FFmpeg-patch/ffmpeg4.2_va/patches/0001-ffmpeg-video-analytics-v0.4-release.patch
-ARG FFMPEG_VA_PATCH_V04_002=https://raw.githubusercontent.com/VCDP/FFmpeg-patch/ffmpeg4.2_va/patches/0002-Use-a-common-way-for-param-tags.patch
-ARG FFMPEG_VA_PATCH_V04_003=https://raw.githubusercontent.com/VCDP/FFmpeg-patch/ffmpeg4.2_va/patches/0003-C-API-related-changes-for-OpenVINO-2020.1.patch
 
-ARG FFMPEG_MA_RELEASE_VER=0.4.1
+ARG FFMPEG_MA_RELEASE_VER=0.5
 ARG FFMPEG_MA_RELEASE_URL=https://github.com/VCDP/FFmpeg-patch/archive/v${FFMPEG_MA_RELEASE_VER}.tar.gz
 ARG FFMPEG_MA_PATH=/home/FFmpeg-patch-${FFMPEG_MA_RELEASE_VER}
 RUN wget -O - ${FFMPEG_MA_RELEASE_URL} | tar xz
@@ -422,11 +411,12 @@ RUN wget -O - ${FFMPEG_REPO} | tar xz && mv FFmpeg-${FFMPEG_VER} FFmpeg
 
 RUN cd /home/FFmpeg && \
     find ${FFMPEG_MA_PATH}/patches -type f -name '*.patch' -print0 | sort -z | xargs -t -0 -n 1 patch -p1 -i && \
-    cp /root/patch/opencv.pc /usr/local/lib/pkgconfig/ && \
+    cp /root/patch/opencv.pc /usr/lib/pkgconfig/ && \
     cp /root/patch/cvdef.h /usr/local/include/opencv4/opencv2/core/cvdef.h && \
-    ./configure --prefix="/usr" --libdir=/usr/lib/x86_64-linux-gnu --extra-libs="-lpthread -lm" --enable-shared --enable-gpl --enable-libass --enable-libfreetype  --enable-openssl --enable-nonfree --enable-libdrm --enable-libmfx --disable-doc --disable-htmlpages --disable-manpages --disable-podpages --disable-txtpages --enable-libfdk-aac --enable-libmp3lame --enable-libopus --enable-libvorbis --enable-libvpx --enable-libx264 --enable-libx265 --enable-libaom --enable-librdkafka --enable-libjson_c --enable-libinference_engine_c_wrapper --enable-libopencv && \
+    ./configure --prefix="/usr" --extra-cflags="-I$IE_PATH/include" --extra-ldflags="-L$IE_PATH/lib/intel64" --libdir=/usr/lib/x86_64-linux-gnu --extra-libs="-lpthread -lm" --enable-shared --enable-gpl --enable-libass --enable-libfreetype  --enable-openssl --enable-nonfree --enable-libdrm --enable-libmfx --disable-doc --disable-htmlpages --disable-manpages --disable-podpages --disable-txtpages --enable-libfdk-aac --enable-libmp3lame --enable-libopus --enable-libvorbis --enable-libvpx --enable-libx264 --enable-libx265 --enable-libaom --enable-librdkafka --enable-libjson_c --enable-libinference_engine_c_api --enable-libopencv --enable-python3 && \
     make -j8 && \
-    make install DESTDIR="/home/build"
+    make install DESTDIR="/home/build" && \
+    cp -rf python /home/build/python
 
 # Clean up after build
 RUN rm -rf /home/build/usr/include && \
@@ -441,8 +431,9 @@ LABEL Vendor="Intel Corporation"
 WORKDIR /home
 
 # Prerequisites
-RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y -q --no-install-recommends libxv1 libxcb-shm0 libxcb-shape0 libxcb-xfixes0 libsdl2-2.0-0 libasound2 libvdpau1 libnuma1 libass-dev libssl1.0.0 libdrm2 libboost-all-dev libusb-1.0-0-dev libjson-c-dev ; \
+RUN DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y -q --no-install-recommends libxv1 libxcb-shm0 libxcb-shape0 libxcb-xfixes0 libsdl2-2.0-0 libasound2 libvdpau1 libnuma1 libass-dev libssl1.0.0 libdrm2 libboost-all-dev libusb-1.0-0-dev libjson-c-dev python3-dev python3-pip ; \
     rm -rf /var/lib/apt/lists/*;
+RUN python3 -m pip install Pillow numpy
 
 # Install
 COPY --from=build /home/build /
@@ -453,5 +444,6 @@ ENV IE_PLUGINS_PATH=/opt/intel/openvino/deployment_tools/inference_engine/lib/in
 ENV HDDL_INSTALL_DIR=/opt/intel/openvino/deployment_tools/inference_engine/external/hddl
 ENV InferenceEngine_DIR="/opt/intel/openvino/deployment_tools/inference_engine/share"
 ENV OpenCV_DIR=/opt/intel/openvino/opencv/share/OpenCV
-ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/intel/openvino/deployment_tools/ngraph/lib:/usr/local/lib:/opt/intel/opencl:$HDDL_INSTALL_DIR/lib:/opt/intel/openvino/deployment_tools/inference_engine/external/gna/lib:/opt/intel/openvino/deployment_tools/inference_engine/external/mkltiny_lnx/lib:/opt/intel/openvino/deployment_tools/inference_engine/external/omp/lib:/opt/intel/openvino/deployment_tools/inference_engine/external/tbb/lib:/opt/intel/openvino/openvx/lib:$IE_PLUGINS_PATH
+ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/lib:/opt/intel/openvino/deployment_tools/ngraph/lib:/opt/intel/opencl:$HDDL_INSTALL_DIR/lib:/opt/intel/openvino/deployment_tools/inference_engine/external/gna/lib:/opt/intel/openvino/deployment_tools/inference_engine/external/mkltiny_lnx/lib:/opt/intel/openvino/deployment_tools/inference_engine/external/tbb/lib:/opt/intel/openvino/openvx/lib:$IE_PLUGINS_PATH
+ENV LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/opt/intel/openvino/deployment_tools/ngraph/lib:/usr/local/lib:/opt/intel/opencl:$HDDL_INSTALL_DIR/lib:/opt/intel/openvino/deployment_tools/inference_engine/external/gna/lib:/opt/intel/openvino/deployment_tools/inference_engine/external/mkltiny_lnx/lib:/opt/intel/openvino/deployment_tools/inference_engine/external/tbb/lib:/opt/intel/openvino/openvx/lib:$IE_PLUGINS_PATH
 
