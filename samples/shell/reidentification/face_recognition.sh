@@ -37,6 +37,6 @@ IDENTIFICATION_MODEL_PATH=$(GET_MODEL_PATH $IDENTIFICATION_MODEL )
 
 ffmpeg -i $INPUT -vf "detect=model=$DETECT_MODEL_PATH:device=$DEVICE:nireq=4, \
 classify=model=$IDENTIFICATION_MODEL_PATH:model_proc=$(PROC_PATH $IDENTIFICATION_MODEL_PROC):device=$DEVICE:nireq=4, \
-identify=gallery=$GALLERY" \
+identify=gallery=$GALLERY,metaconvert=converter=json:method=all" \
 -an -f metapublish -output_format batch -y /tmp/face-identify.json
 
